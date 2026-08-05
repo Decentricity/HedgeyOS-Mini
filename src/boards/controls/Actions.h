@@ -8,6 +8,8 @@ typedef enum
   UP,
   DOWN,
   SELECT,
+  PAGE_BACK,
+  PAGE_FORWARD,
   LAST_INTERACTION
 } UIAction;
 

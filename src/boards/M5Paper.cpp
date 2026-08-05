@@ -7,6 +7,7 @@
 #include <hourglass.h>
 #include <SPIFFS.h>
 #include "controls/GPIOButtonControls.h"
+#include "controls/M5PaperTouchControls.h"
 
 #define M5EPD_MAIN_PWR_PIN GPIO_NUM_2
 //setup the pins to use for navigation
@@ -56,6 +57,15 @@ ButtonControls *M5Paper::get_button_controls(xQueueHandle ui_queue)
       BUTTON_DOWN_GPIO_NUM,
       BUTTON_SELECT_GPIO_NUM,
       BUTONS_ACTIVE_LEVEL,
+      [ui_queue](UIAction action)
+      {
+        xQueueSend(ui_queue, &action, 0);
+      });
+}
+
+TouchControls *M5Paper::get_touch_controls(Renderer *renderer, xQueueHandle ui_queue)
+{
+  return new M5PaperTouchControls(
       [ui_queue](UIAction action)
       {
         xQueueSend(ui_queue, &action, 0);

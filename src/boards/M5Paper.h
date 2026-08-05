@@ -10,4 +10,5 @@ public:
   virtual Renderer *get_renderer();
   virtual void stop_filesystem();
   virtual ButtonControls *get_button_controls(xQueueHandle ui_queue);
+  virtual TouchControls *get_touch_controls(Renderer *renderer, xQueueHandle ui_queue);
 };

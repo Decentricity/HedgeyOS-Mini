@@ -56,9 +56,11 @@ void handleEpub(Renderer *renderer, UIAction action)
   switch (action)
   {
   case UP:
+  case PAGE_BACK:
     reader->prev();
     break;
   case DOWN:
+  case PAGE_FORWARD:
     reader->next();
     break;
   case SELECT:
