@@ -25,6 +25,7 @@ static const char *TAG = "PUBLIST";
 #define EPUB_ROWS 5
 #define EPUBS_PER_PAGE (EPUB_COLUMNS * EPUB_ROWS)
 #define MAX_TITLE_LINES 4
+#define TOUCH_FEEDBACK_SIZE 14
 
 void EpubList::next()
 {
@@ -74,6 +75,23 @@ bool EpubList::select_visible_item_at(int x, int y, int page_width, int page_hei
   }
   state.selected_item = selected_item;
   return true;
+}
+
+void EpubList::show_touch_feedback()
+{
+  const int page_width = renderer->get_page_width();
+  const int page_height = renderer->get_page_height();
+  const int cell_width = page_width / EPUB_COLUMNS;
+  const int cell_height = page_height / EPUB_ROWS;
+  const int position = state.selected_item % EPUBS_PER_PAGE;
+  const int marker_x = (position % EPUB_COLUMNS) * cell_width +
+                       cell_width - PADDING - TOUCH_FEEDBACK_SIZE;
+  const int marker_y = (position / EPUB_COLUMNS) * cell_height + PADDING;
+  renderer->fill_rect(marker_x, marker_y,
+                      TOUCH_FEEDBACK_SIZE, TOUCH_FEEDBACK_SIZE, 0);
+  renderer->flush_area(marker_x + renderer->get_margin_left(),
+                       marker_y + renderer->get_margin_top(),
+                       TOUCH_FEEDBACK_SIZE, TOUCH_FEEDBACK_SIZE);
 }
 
 bool EpubList::load(const char *path)

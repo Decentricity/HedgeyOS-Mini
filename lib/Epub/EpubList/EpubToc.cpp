@@ -6,6 +6,7 @@
 static const char *TAG = "PUBINDEX";
 #define PADDING 14
 #define ITEMS_PER_PAGE 6
+#define TOUCH_FEEDBACK_SIZE 14
 
 void EpubToc::next()
 {
@@ -83,6 +84,19 @@ bool EpubToc::select_visible_item_at(int y, int page_height)
   }
   state.selected_item = selected_item;
   return true;
+}
+
+void EpubToc::show_touch_feedback()
+{
+  const int cell_height = renderer->get_page_height() / ITEMS_PER_PAGE;
+  const int row = state.selected_item % ITEMS_PER_PAGE;
+  const int marker_x = renderer->get_page_width() - PADDING - TOUCH_FEEDBACK_SIZE;
+  const int marker_y = row * cell_height + PADDING;
+  renderer->fill_rect(marker_x, marker_y,
+                      TOUCH_FEEDBACK_SIZE, TOUCH_FEEDBACK_SIZE, 0);
+  renderer->flush_area(marker_x + renderer->get_margin_left(),
+                       marker_y + renderer->get_margin_top(),
+                       TOUCH_FEEDBACK_SIZE, TOUCH_FEEDBACK_SIZE);
 }
 
 bool EpubToc::load()

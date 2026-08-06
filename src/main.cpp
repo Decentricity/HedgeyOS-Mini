@@ -50,6 +50,70 @@ static EpubReader *reader = nullptr;
 static EpubToc *contents = nullptr;
 static EpubCache *epub_cache = nullptr;
 
+namespace
+{
+const int PAGE_BUTTON_WIDTH = 44;
+const int PAGE_BUTTON_HEIGHT = 32;
+const int PAGE_BUTTON_GAP = 12;
+const int PAGE_BUTTON_Y = 1;
+
+int previous_page_button_x(int screen_width)
+{
+  return screen_width / 2 - PAGE_BUTTON_GAP / 2 - PAGE_BUTTON_WIDTH;
+}
+
+int next_page_button_x(int screen_width)
+{
+  return screen_width / 2 + PAGE_BUTTON_GAP / 2;
+}
+
+void draw_selector_page_controls(Renderer *renderer)
+{
+  const int saved_margin_top = renderer->get_margin_top();
+  const int saved_margin_left = renderer->get_margin_left();
+  const int screen_width = renderer->get_page_width() +
+                           renderer->get_margin_left() + renderer->get_margin_right();
+  const int previous_x = previous_page_button_x(screen_width);
+  const int next_x = next_page_button_x(screen_width);
+  const int half_width = PAGE_BUTTON_WIDTH / 2;
+
+  renderer->set_margin_top(0);
+  renderer->set_margin_left(0);
+  renderer->draw_rect(previous_x, PAGE_BUTTON_Y,
+                      PAGE_BUTTON_WIDTH, PAGE_BUTTON_HEIGHT, 0);
+  renderer->fill_triangle(previous_x + half_width, PAGE_BUTTON_Y + 6,
+                          previous_x + half_width - 8, PAGE_BUTTON_Y + 24,
+                          previous_x + half_width + 8, PAGE_BUTTON_Y + 24, 0);
+  renderer->draw_rect(next_x, PAGE_BUTTON_Y,
+                      PAGE_BUTTON_WIDTH, PAGE_BUTTON_HEIGHT, 0);
+  renderer->fill_triangle(next_x + half_width, PAGE_BUTTON_Y + 25,
+                          next_x + half_width - 8, PAGE_BUTTON_Y + 7,
+                          next_x + half_width + 8, PAGE_BUTTON_Y + 7, 0);
+  renderer->set_margin_top(saved_margin_top);
+  renderer->set_margin_left(saved_margin_left);
+}
+
+UIAction selector_page_action(const UIEvent &event, int screen_width)
+{
+  if (event.y < PAGE_BUTTON_Y ||
+      event.y >= PAGE_BUTTON_Y + PAGE_BUTTON_HEIGHT)
+  {
+    return NONE;
+  }
+  const int previous_x = previous_page_button_x(screen_width);
+  const int next_x = next_page_button_x(screen_width);
+  if (event.x >= previous_x && event.x < previous_x + PAGE_BUTTON_WIDTH)
+  {
+    return UP;
+  }
+  if (event.x >= next_x && event.x < next_x + PAGE_BUTTON_WIDTH)
+  {
+    return DOWN;
+  }
+  return NONE;
+}
+}
+
 void handleEpub(Renderer *renderer, UIAction action)
 {
   if (!reader)
@@ -141,6 +205,7 @@ void handleEpubTableContents(Renderer *renderer, UIAction action, bool needs_red
     break;
   }
   contents->render();
+  draw_selector_page_controls(renderer);
 }
 
 void handleEpubList(Renderer *renderer, UIAction action, bool needs_redraw)
@@ -192,6 +257,7 @@ void handleEpubList(Renderer *renderer, UIAction action, bool needs_redraw)
     break;
   }
   epub_list->render();
+  draw_selector_page_controls(renderer);
 }
 
 void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
@@ -236,6 +302,22 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
     return;
   }
 
+  const UIAction page_action = selector_page_action(event, screen_width);
+  if (page_action != NONE)
+  {
+    ESP_LOGI("TOUCH", "Selector page arrow -> %s",
+             page_action == UP ? "previous" : "next");
+    if (ui_state == SELECTING_TABLE_CONTENTS)
+    {
+      handleEpubTableContents(renderer, page_action, false);
+    }
+    else if (ui_state == SELECTING_EPUB)
+    {
+      handleEpubList(renderer, page_action, false);
+    }
+    return;
+  }
+
   if (content_x < 0 || content_x >= page_width ||
       content_y < 0 || content_y >= page_height)
   {
@@ -246,12 +328,14 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
       contents->select_visible_item_at(content_y, page_height))
   {
     ESP_LOGI("TOUCH", "Selected chapter at y=%d", event.y);
+    contents->show_touch_feedback();
     handleEpubTableContents(renderer, SELECT, false);
   }
   else if (ui_state == SELECTING_EPUB && epub_list &&
            epub_list->select_visible_item_at(content_x, content_y, page_width, page_height))
   {
     ESP_LOGI("TOUCH", "Selected book at y=%d", event.y);
+    epub_list->show_touch_feedback();
     handleEpubList(renderer, SELECT, false);
   }
 }

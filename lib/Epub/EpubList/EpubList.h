@@ -27,5 +27,6 @@ public:
   void next_page();
   void prev_page();
   bool select_visible_item_at(int x, int y, int page_width, int page_height);
+  void show_touch_feedback();
   void render();
 };
