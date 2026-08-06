@@ -12,6 +12,7 @@ typedef enum
   PAGE_BACK,
   PAGE_FORWARD,
   SHOW_TOC,
+  SHOW_BOOKS,
   TOUCH_TAP,
   LAST_INTERACTION
 } UIAction;

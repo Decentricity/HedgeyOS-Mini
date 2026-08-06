@@ -161,6 +161,15 @@ void EpubToc::render()
     }
     ypos += cell_height;
   }
+  // The chapter list is the only screen with a touch-only close control.
+  // Draw it in the unused top margin, leaving the content geometry unchanged.
+  const int saved_margin_top = renderer->get_margin_top();
+  const int saved_margin_left = renderer->get_margin_left();
+  renderer->set_margin_top(0);
+  renderer->set_margin_left(0);
+  renderer->draw_text(5, 0, "[X]");
+  renderer->set_margin_top(saved_margin_top);
+  renderer->set_margin_left(saved_margin_left);
   state.previous_selected_item = state.selected_item;
   state.previous_rendered_page = current_page;
 }

@@ -105,6 +105,13 @@ void handleEpubTableContents(Renderer *renderer, UIAction action, bool needs_red
   }
   switch (action)
   {
+  case SHOW_BOOKS:
+    ui_state = SELECTING_EPUB;
+    renderer->clear_screen();
+    delete contents;
+    contents = nullptr;
+    handleEpubList(renderer, NONE, true);
+    return;
   case UP:
     contents->prev_page();
     break;
@@ -205,6 +212,14 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
 
   const int content_y = event.y - renderer->get_margin_top();
   const int page_height = renderer->get_page_height();
+
+  if (ui_state == SELECTING_TABLE_CONTENTS && event.x < 60 && event.y < 60)
+  {
+    ESP_LOGI("TOUCH", "Chapter close tap -> book list");
+    handleEpubTableContents(renderer, SHOW_BOOKS, false);
+    return;
+  }
+
   if (content_y < 0 || content_y >= page_height)
   {
     return;
