@@ -15,6 +15,7 @@ typedef enum
   NEXT_CHAPTER,
   SHOW_TOC,
   SHOW_BOOKS,
+  SHOW_HOME,
   TOUCH_TAP,
   LAST_INTERACTION
 } UIAction;

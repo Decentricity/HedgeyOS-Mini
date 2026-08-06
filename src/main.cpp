@@ -8,6 +8,8 @@
 #include "EpubList/EpubList.h"
 #include "EpubList/EpubReader.h"
 #include "EpubList/EpubToc.h"
+#include <hedgeyos_mini.h>
+#include <miniz.h>
 #include <RubbishHtmlParser/RubbishHtmlParser.h>
 #include "boards/Board.h"
 
@@ -28,6 +30,7 @@ const char *TAG = "main";
 
 typedef enum
 {
+  HOME_SCREEN,
   SELECTING_EPUB,
   SELECTING_TABLE_CONTENTS,
   READING_EPUB
@@ -42,6 +45,7 @@ RTC_DATA_ATTR EpubListState epub_list_state;
 RTC_DATA_ATTR EpubTocState epub_index_state;
 
 void handleEpub(Renderer *renderer, UIAction action);
+void handleHome(Renderer *renderer);
 void handleEpubList(Renderer *renderer, UIAction action, bool needs_redraw);
 void handleEpubTableContents(Renderer *renderer, UIAction action, bool needs_redraw);
 
@@ -73,6 +77,9 @@ const int TOP_BUTTON_HEIGHT = 48;
 const int TOP_BUTTON_GAP = 18;
 const int TOP_BUTTON_Y = 3;
 const int CLOSE_BUTTON_X = 4;
+const int HOME_TILE_WIDTH = 250;
+const int HOME_TILE_HEIGHT = 170;
+const int HOME_TILE_GAP = 80;
 
 enum TopBarControl
 {
@@ -166,6 +173,93 @@ TopBarControl top_bar_control_at(const UIEvent &event, int screen_width)
   }
   return TOP_BAR_NONE;
 }
+
+int home_tiles_x(int page_width)
+{
+  return (page_width - HOME_TILE_WIDTH * 2 - HOME_TILE_GAP) / 2;
+}
+
+int home_tiles_y(int page_height)
+{
+  return page_height - HOME_TILE_HEIGHT - 22;
+}
+
+void draw_home_title(Renderer *renderer, int page_width)
+{
+  static uint8_t unpacked[hedgeyos_mini_raw_size];
+  static bool is_unpacked = false;
+  if (!is_unpacked)
+  {
+    is_unpacked = tinfl_decompress_mem_to_mem(
+                      unpacked, sizeof(unpacked),
+                      hedgeyos_mini_data, sizeof(hedgeyos_mini_data), 0) !=
+                  TINFL_DECOMPRESS_MEM_TO_MEM_FAILED;
+  }
+  if (!is_unpacked)
+  {
+    ESP_LOGE(TAG, "Could not unpack the home wordmark");
+    return;
+  }
+
+  const int start_x = (page_width - hedgeyos_mini_width) / 2;
+  const int start_y = 28;
+  for (int y = 0; y < hedgeyos_mini_height; ++y)
+  {
+    for (int x = 0; x < hedgeyos_mini_width; ++x)
+    {
+      if (unpacked[y * hedgeyos_mini_stride + x / 8] & (1 << (x % 8)))
+      {
+        renderer->draw_pixel(start_x + x, start_y + y, 0);
+      }
+    }
+  }
+}
+}
+
+void handleHome(Renderer *renderer)
+{
+  renderer->use_selector_font(false);
+  renderer->clear_screen();
+  const int page_width = renderer->get_page_width();
+  const int page_height = renderer->get_page_height();
+  const int tiles_x = home_tiles_x(page_width);
+  const int tiles_y = home_tiles_y(page_height);
+
+  draw_home_title(renderer, page_width);
+
+  const int read_center_x = tiles_x + HOME_TILE_WIDTH / 2;
+  const int write_center_x = tiles_x + HOME_TILE_WIDTH + HOME_TILE_GAP + HOME_TILE_WIDTH / 2;
+  const int icon_y = tiles_y + 14;
+  const int margin_left = renderer->get_margin_left();
+  const int margin_top = renderer->get_margin_top();
+
+  // Open-book icon.
+  renderer->draw_rect(read_center_x - 56, icon_y, 52, 78, 0);
+  renderer->draw_rect(read_center_x + 4, icon_y, 52, 78, 0);
+  renderer->fill_triangle(read_center_x + margin_left, icon_y + 8 + margin_top,
+                          read_center_x - 4 + margin_left, icon_y + margin_top,
+                          read_center_x - 4 + margin_left, icon_y + 78 + margin_top, 0);
+  renderer->fill_triangle(read_center_x + margin_left, icon_y + 8 + margin_top,
+                          read_center_x + 4 + margin_left, icon_y + margin_top,
+                          read_center_x + 4 + margin_left, icon_y + 78 + margin_top, 0);
+  renderer->draw_text(read_center_x - renderer->get_text_width("Read") / 2,
+                      icon_y + 90, "Read");
+
+  // Notepad and pen icon. Write is intentionally a visual placeholder for now.
+  renderer->draw_rect(write_center_x - 48, icon_y, 82, 78, 0);
+  renderer->fill_rect(write_center_x - 34, icon_y - 5, 10, 10, 0);
+  renderer->fill_rect(write_center_x - 4, icon_y - 5, 10, 10, 0);
+  renderer->fill_rect(write_center_x + 26, icon_y - 5, 10, 10, 0);
+  renderer->fill_triangle(write_center_x + 4 + margin_left, icon_y + 64 + margin_top,
+                          write_center_x + 42 + margin_left, icon_y + 16 + margin_top,
+                          write_center_x + 48 + margin_left, icon_y + 22 + margin_top, 0);
+  renderer->fill_triangle(write_center_x + 4 + margin_left, icon_y + 64 + margin_top,
+                          write_center_x + 48 + margin_left, icon_y + 22 + margin_top,
+                          write_center_x + 10 + margin_left, icon_y + 70 + margin_top, 0);
+  renderer->draw_text(write_center_x - renderer->get_text_width("Write") / 2,
+                      icon_y + 90, "Write");
+
+  draw_top_bar_controls(renderer);
 }
 
 void handleEpub(Renderer *renderer, UIAction action)
@@ -297,6 +391,11 @@ void handleEpubList(Renderer *renderer, UIAction action, bool needs_redraw)
   // work out what the user wants us to do
   switch (action)
   {
+  case SHOW_HOME:
+    renderer->show_busy();
+    ui_state = HOME_SCREEN;
+    handleHome(renderer);
+    return;
   case UP:
     epub_list->prev_page();
     break;
@@ -357,7 +456,12 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
 
   if (top_bar_control == TOP_BAR_CLOSE)
   {
-    if (ui_state == READING_EPUB)
+    if (ui_state == SELECTING_EPUB)
+    {
+      ESP_LOGI("TOUCH", "Book close tap -> home");
+      handleEpubList(renderer, SHOW_HOME, false);
+    }
+    else if (ui_state == READING_EPUB)
     {
       ESP_LOGI("TOUCH", "Reading close tap -> chapter list");
       handleEpub(renderer, SHOW_TOC);
@@ -416,6 +520,22 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
   const int page_width = renderer->get_page_width();
   const int page_height = renderer->get_page_height();
 
+  if (ui_state == HOME_SCREEN)
+  {
+    const int tiles_x = home_tiles_x(page_width);
+    const int tiles_y = home_tiles_y(page_height);
+    if (content_x >= tiles_x && content_x < tiles_x + HOME_TILE_WIDTH &&
+        content_y >= tiles_y && content_y < tiles_y + HOME_TILE_HEIGHT)
+    {
+      ESP_LOGI("TOUCH", "Read tile tap -> book list");
+      renderer->show_busy();
+      ui_state = SELECTING_EPUB;
+      renderer->clear_screen();
+      handleEpubList(renderer, NONE, true);
+    }
+    return;
+  }
+
   if (content_x < 0 || content_x >= page_width ||
       content_y < 0 || content_y >= page_height)
   {
@@ -446,6 +566,9 @@ void handleUserInteraction(Renderer *renderer, const UIEvent &ui_event, bool nee
 
   switch (ui_state)
   {
+  case HOME_SCREEN:
+    handleHome(renderer);
+    break;
   case READING_EPUB:
     handleEpub(renderer, ui_event.action);
     break;
