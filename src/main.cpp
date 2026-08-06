@@ -116,6 +116,7 @@ UIAction selector_page_action(const UIEvent &event, int screen_width)
 
 void handleEpub(Renderer *renderer, UIAction action)
 {
+  renderer->use_selector_font(false);
   if (!reader)
   {
     reader = new EpubReader(epub_list_state.epub_list[epub_list_state.selected_item], renderer);
@@ -169,6 +170,7 @@ void handleEpub(Renderer *renderer, UIAction action)
 
 void handleEpubTableContents(Renderer *renderer, UIAction action, bool needs_redraw)
 {
+  renderer->use_selector_font(true);
   if (!contents)
   {
     contents = new EpubToc(epub_list_state.epub_list[epub_list_state.selected_item],
@@ -210,6 +212,7 @@ void handleEpubTableContents(Renderer *renderer, UIAction action, bool needs_red
 
 void handleEpubList(Renderer *renderer, UIAction action, bool needs_redraw)
 {
+  renderer->use_selector_font(true);
   // load up the epub list from the filesystem
   if (!epub_list)
   {

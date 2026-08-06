@@ -14,6 +14,8 @@ protected:
   const EpdFont *m_bold_font;
   const EpdFont *m_italic_font;
   const EpdFont *m_bold_italic_font;
+  const EpdFont *m_selector_font;
+  bool m_selector_font_enabled = false;
   const uint8_t *m_busy_image;
   int m_busy_image_width;
   int m_busy_image_height;
@@ -24,6 +26,10 @@ protected:
 
   const EpdFont *get_font(bool is_bold, bool is_italic)
   {
+    if (m_selector_font_enabled && m_selector_font)
+    {
+      return m_selector_font;
+    }
     if (is_bold && is_italic)
     {
       return m_bold_italic_font;
@@ -47,9 +53,11 @@ public:
       const EpdFont *bold_italic_font,
       const uint8_t *busy_icon,
       int busy_icon_width,
-      int busy_icon_height)
+      int busy_icon_height,
+      const EpdFont *selector_font = nullptr)
       : m_regular_font(regular_font), m_bold_font(bold_font), m_italic_font(italic_font), m_bold_italic_font(bold_italic_font),
-        m_busy_image(busy_icon), m_busy_image_width(busy_icon_width), m_busy_image_height(busy_icon_height)
+        m_selector_font(selector_font), m_busy_image(busy_icon),
+        m_busy_image_width(busy_icon_width), m_busy_image_height(busy_icon_height)
   {
     m_font_props = epd_font_properties_default();
     // fallback to a question mark for character not available in the font
@@ -164,12 +172,16 @@ public:
   }
   virtual int get_space_width()
   {
-    auto space_glyph = epd_get_glyph(m_regular_font, ' ');
+    auto space_glyph = epd_get_glyph(get_font(false, false), ' ');
     return space_glyph->advance_x;
   }
   virtual int get_line_height()
   {
-    return m_regular_font->advance_y;
+    return get_font(false, false)->advance_y;
+  }
+  void use_selector_font(bool enabled) override
+  {
+    m_selector_font_enabled = enabled && m_selector_font;
   }
 
   // dehydate a frame buffer to file

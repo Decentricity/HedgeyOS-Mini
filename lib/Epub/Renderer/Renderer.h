@@ -46,6 +46,7 @@ public:
   virtual int get_page_height() = 0;
   virtual int get_space_width() = 0;
   virtual int get_line_height() = 0;
+  virtual void use_selector_font(bool enabled) {}
   // set margins
   void set_margin_top(int margin_top) { this->margin_top = margin_top; }
   void set_margin_bottom(int margin_bottom) { this->margin_bottom = margin_bottom; }

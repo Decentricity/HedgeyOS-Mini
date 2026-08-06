@@ -19,8 +19,11 @@ public:
       const EpdFont *bold_italic_font,
       const uint8_t *busy_icon,
       int busy_icon_width,
-      int busy_icon_height)
-      : EpdiyFrameBufferRenderer(regular_font, bold_font, italic_font, bold_italic_font, busy_icon, busy_icon_width, busy_icon_height)
+      int busy_icon_height,
+      const EpdFont *selector_font)
+      : EpdiyFrameBufferRenderer(regular_font, bold_font, italic_font,
+                                 bold_italic_font, busy_icon, busy_icon_width,
+                                 busy_icon_height, selector_font)
   {
     driver.begin();
     driver.SetColorReverse(true);

@@ -20,11 +20,11 @@
 
 static const char *TAG = "PUBLIST";
 
-#define PADDING 10
+#define PADDING 8
 #define EPUB_COLUMNS 2
-#define EPUB_ROWS 5
+#define EPUB_ROWS 8
 #define EPUBS_PER_PAGE (EPUB_COLUMNS * EPUB_ROWS)
-#define MAX_TITLE_LINES 4
+#define MAX_TITLE_LINES 3
 #define TOUCH_FEEDBACK_SIZE 14
 
 void EpubList::next()

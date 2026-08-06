@@ -4,6 +4,7 @@
 #include <bold_font.h>
 #include <italic_font.h>
 #include <bold_italic_font.h>
+#include <selector_font.h>
 #include <hourglass.h>
 #include <SPIFFS.h>
 #include "controls/GPIOButtonControls.h"
@@ -39,7 +40,8 @@ Renderer *M5Paper::get_renderer()
       &bold_italic_font,
       hourglass_data,
       hourglass_width,
-      hourglass_height);
+      hourglass_height,
+      &selector_font);
 }
 void M5Paper::stop_filesystem()
 {

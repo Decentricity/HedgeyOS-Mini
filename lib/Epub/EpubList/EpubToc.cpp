@@ -4,8 +4,8 @@
 #include <sys/stat.h>
 
 static const char *TAG = "PUBINDEX";
-#define PADDING 14
-#define ITEMS_PER_PAGE 6
+#define PADDING 10
+#define ITEMS_PER_PAGE 8
 #define TOUCH_FEEDBACK_SIZE 14
 
 void EpubToc::next()
@@ -186,7 +186,10 @@ void EpubToc::render()
       int y_offset = title_height < text_height ? (text_height - title_height) / 2 : 0;
       // draw each line of the index block making sure we don't run over the cell
       int height = 0;
-      for (int i = 0; i < title_block->line_breaks.size() && height < text_height; i++)
+      for (int i = 0;
+           i < title_block->line_breaks.size() &&
+           height + renderer->get_line_height() <= text_height;
+           i++)
       {
         title_block->render(renderer, i, 10, ypos + height + y_offset);
         height += renderer->get_line_height();
