@@ -41,6 +41,7 @@ RTC_DATA_ATTR EpubTocState epub_index_state;
 
 void handleEpub(Renderer *renderer, UIAction action);
 void handleEpubList(Renderer *renderer, UIAction action, bool needs_redraw);
+void handleEpubTableContents(Renderer *renderer, UIAction action, bool needs_redraw);
 
 static EpubList *epub_list = nullptr;
 static EpubReader *reader = nullptr;
@@ -63,6 +64,16 @@ void handleEpub(Renderer *renderer, UIAction action)
   case PAGE_FORWARD:
     reader->next();
     break;
+  case SHOW_TOC:
+    ui_state = SELECTING_TABLE_CONTENTS;
+    renderer->clear_screen();
+    delete reader;
+    reader = nullptr;
+    contents = new EpubToc(epub_list_state.epub_list[epub_list_state.selected_item], epub_index_state, renderer);
+    contents->load();
+    contents->set_needs_redraw();
+    handleEpubTableContents(renderer, NONE, true);
+    return;
   case SELECT:
     // switch back to main screen
     ui_state = SELECTING_EPUB;
@@ -95,10 +106,10 @@ void handleEpubTableContents(Renderer *renderer, UIAction action, bool needs_red
   switch (action)
   {
   case UP:
-    contents->prev();
+    contents->prev_page();
     break;
   case DOWN:
-    contents->next();
+    contents->next_page();
     break;
   case SELECT:
     // setup the reader state
@@ -109,6 +120,7 @@ void handleEpubTableContents(Renderer *renderer, UIAction action, bool needs_red
     reader->load();
     //switch to reading the epub
     delete contents;
+    contents = nullptr;
     handleEpub(renderer, NONE);
     return;
   case NONE:
@@ -138,10 +150,10 @@ void handleEpubList(Renderer *renderer, UIAction action, bool needs_redraw)
   switch (action)
   {
   case UP:
-    epub_list->prev();
+    epub_list->prev_page();
     break;
   case DOWN:
-    epub_list->next();
+    epub_list->next_page();
     break;
   case SELECT:
     // switch to reading the epub
@@ -161,19 +173,82 @@ void handleEpubList(Renderer *renderer, UIAction action, bool needs_redraw)
   epub_list->render();
 }
 
-void handleUserInteraction(Renderer *renderer, UIAction ui_action, bool needs_redraw)
+void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
 {
+  const int screen_width = renderer->get_page_width() +
+                           renderer->get_margin_left() + renderer->get_margin_right();
+  const int screen_height = renderer->get_page_height() +
+                            renderer->get_margin_top() + renderer->get_margin_bottom();
+
+  if (ui_state == READING_EPUB)
+  {
+    const bool top_center = event.y < screen_height / 5 &&
+                            event.x >= screen_width / 3 &&
+                            event.x < screen_width * 2 / 3;
+    if (top_center)
+    {
+      ESP_LOGI("TOUCH", "Top-center tap -> chapter list");
+      handleEpub(renderer, SHOW_TOC);
+    }
+    else if (event.x < screen_width / 2)
+    {
+      ESP_LOGI("TOUCH", "Left tap -> previous page");
+      handleEpub(renderer, PAGE_BACK);
+    }
+    else
+    {
+      ESP_LOGI("TOUCH", "Right tap -> next page");
+      handleEpub(renderer, PAGE_FORWARD);
+    }
+    return;
+  }
+
+  const int content_y = event.y - renderer->get_margin_top();
+  const int page_height = renderer->get_page_height();
+  if (content_y < 0 || content_y >= page_height)
+  {
+    return;
+  }
+
+  if (ui_state == SELECTING_TABLE_CONTENTS && contents &&
+      contents->select_visible_item_at(content_y, page_height))
+  {
+    ESP_LOGI("TOUCH", "Selected chapter at y=%d", event.y);
+    handleEpubTableContents(renderer, SELECT, false);
+  }
+  else if (ui_state == SELECTING_EPUB && epub_list &&
+           epub_list->select_visible_item_at(content_y, page_height))
+  {
+    ESP_LOGI("TOUCH", "Selected book at y=%d", event.y);
+    handleEpubList(renderer, SELECT, false);
+  }
+}
+
+void handleUserInteraction(Renderer *renderer, const UIEvent &ui_event, bool needs_redraw)
+{
+  if (ui_event.action == TOUCH_TAP)
+  {
+    handleTouchInteraction(renderer, ui_event);
+    return;
+  }
+
   switch (ui_state)
   {
   case READING_EPUB:
-    handleEpub(renderer, ui_action);
+    handleEpub(renderer, ui_event.action);
     break;
   case SELECTING_TABLE_CONTENTS:
-    handleEpubTableContents(renderer, ui_action, needs_redraw);
+    handleEpubTableContents(renderer, ui_event.action, needs_redraw);
     break;
   case SELECTING_EPUB:
+    handleEpubList(renderer, ui_event.action, needs_redraw);
+    break;
   default:
-    handleEpubList(renderer, ui_action, needs_redraw);
+    // RTC_NOINIT_ATTR can contain an undefined value after a cold boot. The
+    // legacy UI drew the book list through this default branch without fixing
+    // the state, which left coordinate-based touch dispatch with no valid UI.
+    ui_state = SELECTING_EPUB;
+    handleEpubList(renderer, ui_event.action, needs_redraw);
     break;
   }
 }
@@ -226,7 +301,7 @@ void main_task(void *param)
   renderer->set_margin_right(10);
 
   // create a message queue for UI events
-  xQueueHandle ui_queue = xQueueCreate(10, sizeof(UIAction));
+  xQueueHandle ui_queue = xQueueCreate(10, sizeof(UIEvent));
 
   // set the controls up
   ESP_LOGI("main", "Setting up controls");
@@ -239,15 +314,16 @@ void main_task(void *param)
   {
     // restore the renderer state - it should have been saved when we went to sleep...
     bool hydrate_success = renderer->hydrate();
-    UIAction ui_action = button_controls->get_deep_sleep_action();
-    handleUserInteraction(renderer, ui_action, !hydrate_success);
+    const UIEvent ui_event = {button_controls->get_deep_sleep_action(), 0, 0};
+    handleUserInteraction(renderer, ui_event, !hydrate_success);
   }
   else
   {
     // reset the screen
     renderer->reset();
     // make sure the UI is in the right state
-    handleUserInteraction(renderer, NONE, true);
+    const UIEvent ui_event = {NONE, 0, 0};
+    handleUserInteraction(renderer, ui_event, true);
   }
 
   // draw the battery level before flushing the screen
@@ -262,17 +338,17 @@ void main_task(void *param)
   int64_t last_user_interaction = esp_timer_get_time();
   while (esp_timer_get_time() - last_user_interaction < 120 * 1000 * 1000)
   {
-    UIAction ui_action = NONE;
+    UIEvent ui_event = {NONE, 0, 0};
     // wait for something to happen for 60 seconds
-    if (xQueueReceive(ui_queue, &ui_action, pdMS_TO_TICKS(60000)) == pdTRUE)
+    if (xQueueReceive(ui_queue, &ui_event, pdMS_TO_TICKS(60000)) == pdTRUE)
     {
-      if (ui_action != NONE)
+      if (ui_event.action != NONE)
       {
         // something happened!
         last_user_interaction = esp_timer_get_time();
         // show feedback on the touch controls
-        touch_controls->renderPressedState(renderer, ui_action);
-        handleUserInteraction(renderer, ui_action, false);
+        touch_controls->renderPressedState(renderer, ui_event.action);
+        handleUserInteraction(renderer, ui_event, false);
 
         // make sure to clear the feedback on the touch controls
         touch_controls->render(renderer);

@@ -31,6 +31,44 @@ void EpubList::prev()
   state.selected_item = (state.selected_item - 1 + state.num_epubs) % state.num_epubs;
 }
 
+void EpubList::next_page()
+{
+  if (state.num_epubs == 0)
+  {
+    return;
+  }
+  const int page_count = (state.num_epubs + EPUBS_PER_PAGE - 1) / EPUBS_PER_PAGE;
+  const int next_page = (state.selected_item / EPUBS_PER_PAGE + 1) % page_count;
+  state.selected_item = next_page * EPUBS_PER_PAGE;
+}
+
+void EpubList::prev_page()
+{
+  if (state.num_epubs == 0)
+  {
+    return;
+  }
+  const int page_count = (state.num_epubs + EPUBS_PER_PAGE - 1) / EPUBS_PER_PAGE;
+  const int previous_page = (state.selected_item / EPUBS_PER_PAGE - 1 + page_count) % page_count;
+  state.selected_item = previous_page * EPUBS_PER_PAGE;
+}
+
+bool EpubList::select_visible_item_at(int y, int page_height)
+{
+  if (state.num_epubs == 0 || y < 0 || y >= page_height)
+  {
+    return false;
+  }
+  const int row = y * EPUBS_PER_PAGE / page_height;
+  const int selected_item = (state.selected_item / EPUBS_PER_PAGE) * EPUBS_PER_PAGE + row;
+  if (selected_item >= state.num_epubs)
+  {
+    return false;
+  }
+  state.selected_item = selected_item;
+  return true;
+}
+
 bool EpubList::load(const char *path)
 {
   if (state.is_loaded)

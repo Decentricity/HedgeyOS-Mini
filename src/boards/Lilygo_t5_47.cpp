@@ -48,7 +48,8 @@ TouchControls *Lilygo_t5_47::get_touch_controls(Renderer *renderer, xQueueHandle
       3,
       [ui_queue](UIAction action)
       {
-        xQueueSend(ui_queue, &action, 0);
+        const UIEvent event = {action, 0, 0};
+        xQueueSend(ui_queue, &event, 0);
       });
 #endif
   // dummy implementation
@@ -63,6 +64,7 @@ ButtonControls *Lilygo_t5_47::get_button_controls(xQueueHandle ui_queue)
       BUTONS_ACTIVE_LEVEL,
       [ui_queue](UIAction action)
       {
-        xQueueSend(ui_queue, &action, 0);
+        const UIEvent event = {action, 0, 0};
+        xQueueSend(ui_queue, &event, 0);
       });
 }

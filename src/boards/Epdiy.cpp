@@ -40,6 +40,7 @@ ButtonControls *Epdiy::get_button_controls(xQueueHandle ui_queue)
       BUTONS_ACTIVE_LEVEL,
       [ui_queue](UIAction action)
       {
-        xQueueSend(ui_queue, &action, 0);
+        const UIEvent event = {action, 0, 0};
+        xQueueSend(ui_queue, &event, 0);
       });
 }

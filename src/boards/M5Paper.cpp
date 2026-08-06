@@ -59,15 +59,16 @@ ButtonControls *M5Paper::get_button_controls(xQueueHandle ui_queue)
       BUTONS_ACTIVE_LEVEL,
       [ui_queue](UIAction action)
       {
-        xQueueSend(ui_queue, &action, 0);
+        const UIEvent event = {action, 0, 0};
+        xQueueSend(ui_queue, &event, 0);
       });
 }
 
 TouchControls *M5Paper::get_touch_controls(Renderer *renderer, xQueueHandle ui_queue)
 {
   return new M5PaperTouchControls(
-      [ui_queue](UIAction action)
+      [ui_queue](UIEvent event)
       {
-        xQueueSend(ui_queue, &action, 0);
+        xQueueSend(ui_queue, &event, 0);
       });
 }

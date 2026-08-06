@@ -15,8 +15,8 @@ const uint16_t GT911_TOUCH_STATUS = 0x814E;
 const uint16_t GT911_FIRST_POINT = 0x8150;
 }
 
-M5PaperTouchControls::M5PaperTouchControls(ActionCallback_t on_action)
-    : on_action(on_action)
+M5PaperTouchControls::M5PaperTouchControls(UIEventCallback_t on_event)
+    : on_event(on_event)
 {
   if (initialise())
   {
@@ -132,10 +132,11 @@ void M5PaperTouchControls::finishTap()
       movement_x <= MAX_TAP_MOVEMENT &&
       movement_y <= MAX_TAP_MOVEMENT)
   {
-    const UIAction action = touch_last_x < SCREEN_WIDTH / 2 ? PAGE_BACK : PAGE_FORWARD;
-    ESP_LOGI(TAG, "Tap at %u,%u -> %s", touch_last_x, touch_last_y,
-             action == PAGE_FORWARD ? "next page" : "previous page");
-    on_action(action);
+    ESP_LOGI(TAG, "Tap at %u,%u", touch_last_x, touch_last_y);
+    const UIEvent event = {TOUCH_TAP,
+                           static_cast<int16_t>(touch_last_x),
+                           static_cast<int16_t>(touch_last_y)};
+    on_event(event);
   }
 }
 

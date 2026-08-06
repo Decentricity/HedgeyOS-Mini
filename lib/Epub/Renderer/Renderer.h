@@ -51,6 +51,10 @@ public:
   void set_margin_bottom(int margin_bottom) { this->margin_bottom = margin_bottom; }
   void set_margin_left(int margin_left) { this->margin_left = margin_left; }
   void set_margin_right(int margin_right) { this->margin_right = margin_right; }
+  int get_margin_top() const { return margin_top; }
+  int get_margin_bottom() const { return margin_bottom; }
+  int get_margin_left() const { return margin_left; }
+  int get_margin_right() const { return margin_right; }
   // deep sleep helper - persist any state to disk that may be needed on wake
   virtual bool dehydrate() { return false; };
   // deep sleep helper - retrieve any state from disk after wake

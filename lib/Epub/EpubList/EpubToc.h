@@ -37,6 +37,9 @@ public:
   bool load();
   void next();
   void prev();
+  void next_page();
+  void prev_page();
+  bool select_visible_item_at(int y, int page_height);
   void render();
   void set_needs_redraw() { m_needs_redraw = true; }
   uint16_t get_selected_toc();

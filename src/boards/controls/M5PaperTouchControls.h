@@ -11,12 +11,11 @@ private:
   {
     TOUCH_SDA = 21,
     TOUCH_SCL = 22,
-    SCREEN_WIDTH = 540,
     MAX_TAP_DURATION_MS = 750,
     MAX_TAP_MOVEMENT = 50
   };
 
-  ActionCallback_t on_action;
+  UIEventCallback_t on_event;
   i2c_port_t i2c_port = I2C_NUM_1;
   uint8_t i2c_address = 0;
   bool touching = false;
@@ -35,5 +34,5 @@ private:
   esp_err_t writeRegister(uint16_t reg, uint8_t value);
 
 public:
-  explicit M5PaperTouchControls(ActionCallback_t on_action);
+  explicit M5PaperTouchControls(UIEventCallback_t on_event);
 };

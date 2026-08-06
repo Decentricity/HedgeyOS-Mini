@@ -24,6 +24,59 @@ void EpubToc::prev()
   state.selected_item = (state.selected_item - 1 + epub->get_toc_items_count()) % epub->get_toc_items_count();
 }
 
+void EpubToc::next_page()
+{
+  if (!epub)
+  {
+    load();
+  }
+  const int item_count = epub->get_toc_items_count();
+  if (item_count == 0)
+  {
+    return;
+  }
+  const int page_count = (item_count + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
+  const int next_page = (state.selected_item / ITEMS_PER_PAGE + 1) % page_count;
+  state.selected_item = next_page * ITEMS_PER_PAGE;
+}
+
+void EpubToc::prev_page()
+{
+  if (!epub)
+  {
+    load();
+  }
+  const int item_count = epub->get_toc_items_count();
+  if (item_count == 0)
+  {
+    return;
+  }
+  const int page_count = (item_count + ITEMS_PER_PAGE - 1) / ITEMS_PER_PAGE;
+  const int previous_page = (state.selected_item / ITEMS_PER_PAGE - 1 + page_count) % page_count;
+  state.selected_item = previous_page * ITEMS_PER_PAGE;
+}
+
+bool EpubToc::select_visible_item_at(int y, int page_height)
+{
+  if (!epub)
+  {
+    load();
+  }
+  const int item_count = epub->get_toc_items_count();
+  if (item_count == 0 || y < 0 || y >= page_height)
+  {
+    return false;
+  }
+  const int row = y * ITEMS_PER_PAGE / page_height;
+  const int selected_item = (state.selected_item / ITEMS_PER_PAGE) * ITEMS_PER_PAGE + row;
+  if (selected_item >= item_count)
+  {
+    return false;
+  }
+  state.selected_item = selected_item;
+  return true;
+}
+
 bool EpubToc::load()
 {
   ESP_LOGI(TAG, "load");
