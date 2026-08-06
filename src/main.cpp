@@ -4,6 +4,7 @@
 #include <esp_sleep.h>
 #include "config.h"
 #include "EpubList/Epub.h"
+#include "EpubList/EpubCache.h"
 #include "EpubList/EpubList.h"
 #include "EpubList/EpubReader.h"
 #include "EpubList/EpubToc.h"
@@ -46,6 +47,7 @@ void handleEpubTableContents(Renderer *renderer, UIAction action, bool needs_red
 static EpubList *epub_list = nullptr;
 static EpubReader *reader = nullptr;
 static EpubToc *contents = nullptr;
+static EpubCache *epub_cache = nullptr;
 
 void handleEpub(Renderer *renderer, UIAction action)
 {
@@ -69,7 +71,12 @@ void handleEpub(Renderer *renderer, UIAction action)
     renderer->clear_screen();
     delete reader;
     reader = nullptr;
-    contents = new EpubToc(epub_list_state.epub_list[epub_list_state.selected_item], epub_index_state, renderer);
+    if (!contents || !contents->is_for(epub_list_state.epub_list[epub_list_state.selected_item]))
+    {
+      delete contents;
+      contents = new EpubToc(epub_list_state.epub_list[epub_list_state.selected_item],
+                             epub_index_state, renderer, *epub_cache);
+    }
     contents->load();
     contents->set_needs_redraw();
     handleEpubTableContents(renderer, NONE, true);
@@ -84,7 +91,7 @@ void handleEpub(Renderer *renderer, UIAction action)
     // force a redraw
     if (!epub_list)
     {
-      epub_list = new EpubList(renderer, epub_list_state);
+      epub_list = new EpubList(renderer, epub_list_state, *epub_cache);
     }
     handleEpubList(renderer, NONE, true);
     return;
@@ -99,7 +106,8 @@ void handleEpubTableContents(Renderer *renderer, UIAction action, bool needs_red
 {
   if (!contents)
   {
-    contents = new EpubToc(epub_list_state.epub_list[epub_list_state.selected_item], epub_index_state, renderer);
+    contents = new EpubToc(epub_list_state.epub_list[epub_list_state.selected_item],
+                           epub_index_state, renderer, *epub_cache);
     contents->set_needs_redraw();
     contents->load();
   }
@@ -108,8 +116,6 @@ void handleEpubTableContents(Renderer *renderer, UIAction action, bool needs_red
   case SHOW_BOOKS:
     ui_state = SELECTING_EPUB;
     renderer->clear_screen();
-    delete contents;
-    contents = nullptr;
     handleEpubList(renderer, NONE, true);
     return;
   case UP:
@@ -125,9 +131,8 @@ void handleEpubTableContents(Renderer *renderer, UIAction action, bool needs_red
     reader = new EpubReader(epub_list_state.epub_list[epub_list_state.selected_item], renderer);
     reader->set_state_section(contents->get_selected_toc());
     reader->load();
-    //switch to reading the epub
-    delete contents;
-    contents = nullptr;
+    // switch to reading the epub; retain its chapter list in RAM so returning
+    // from reading mode does not reopen and parse the EPUB.
     handleEpub(renderer, NONE);
     return;
   case NONE:
@@ -143,7 +148,7 @@ void handleEpubList(Renderer *renderer, UIAction action, bool needs_redraw)
   if (!epub_list)
   {
     ESP_LOGI("main", "Creating epub list");
-    epub_list = new EpubList(renderer, epub_list_state);
+    epub_list = new EpubList(renderer, epub_list_state, *epub_cache);
     if (epub_list->load("/fs/"))
     {
       ESP_LOGI("main", "Epub files loaded");
@@ -167,7 +172,15 @@ void handleEpubList(Renderer *renderer, UIAction action, bool needs_redraw)
     // setup the reader state
     ui_state = SELECTING_TABLE_CONTENTS;
     // create the reader and load the book
-    contents = new EpubToc(epub_list_state.epub_list[epub_list_state.selected_item], epub_index_state, renderer);
+    if (!contents || !contents->is_for(epub_list_state.epub_list[epub_list_state.selected_item]))
+    {
+      delete contents;
+      epub_index_state.selected_item = 0;
+      epub_index_state.previous_rendered_page = -1;
+      epub_index_state.previous_selected_item = -1;
+      contents = new EpubToc(epub_list_state.epub_list[epub_list_state.selected_item],
+                             epub_index_state, renderer, *epub_cache);
+    }
     contents->load();
     contents->set_needs_redraw();
     handleEpubTableContents(renderer, NONE, true);
@@ -210,7 +223,9 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
     return;
   }
 
+  const int content_x = event.x - renderer->get_margin_left();
   const int content_y = event.y - renderer->get_margin_top();
+  const int page_width = renderer->get_page_width();
   const int page_height = renderer->get_page_height();
 
   if (ui_state == SELECTING_TABLE_CONTENTS && event.x < 60 && event.y < 60)
@@ -220,7 +235,8 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
     return;
   }
 
-  if (content_y < 0 || content_y >= page_height)
+  if (content_x < 0 || content_x >= page_width ||
+      content_y < 0 || content_y >= page_height)
   {
     return;
   }
@@ -232,7 +248,7 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
     handleEpubTableContents(renderer, SELECT, false);
   }
   else if (ui_state == SELECTING_EPUB && epub_list &&
-           epub_list->select_visible_item_at(content_y, page_height))
+           epub_list->select_visible_item_at(content_x, content_y, page_width, page_height))
   {
     ESP_LOGI("TOUCH", "Selected book at y=%d", event.y);
     handleEpubList(renderer, SELECT, false);
@@ -300,6 +316,19 @@ void main_task(void *param)
   // bring the file system up - SPIFFS or SDCard depending on the defines in platformio.ini
   ESP_LOGI("main", "Starting file system");
   board->start_filesystem();
+  epub_cache = new EpubCache("/fs/.atomic14-epub-cache-v1.bin");
+  if (epub_cache->load())
+  {
+    // If load recovered a validated temporary file after an interrupted
+    // rename, promote it back to the canonical cache path now.
+    epub_cache->save();
+  }
+  else
+  {
+    // The RTC book list may have survived a reset from an older firmware. If
+    // the persistent index is absent or invalid, rebuild it once from the SD.
+    epub_list_state.is_loaded = false;
+  }
 
   // battery details
   ESP_LOGI("main", "Starting battery monitor");

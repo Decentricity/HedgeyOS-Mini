@@ -75,7 +75,7 @@ bool Epub::find_content_opf_file(ZipFile &zip, std::string &content_opf_file)
   return false;
 }
 
-bool Epub::parse_content_opf(ZipFile &zip, std::string &content_opf_file)
+bool Epub::parse_content_opf(ZipFile &zip, std::string &content_opf_file, bool title_only)
 {
   // read in the content.opf file and parse it
   char *contents = (char *)zip.read_file_to_memory(content_opf_file.c_str());
@@ -108,6 +108,10 @@ bool Epub::parse_content_opf(ZipFile &zip, std::string &content_opf_file)
     return false;
   }
   m_title = title->GetText();
+  if (title_only)
+  {
+    return true;
+  }
   auto cover = metadata->FirstChildElement("meta");
   while (cover && cover->Attribute("name") && strcmp(cover->Attribute("name"), "cover") != 0)
   {
@@ -244,6 +248,20 @@ bool Epub::parse_toc_ncx_file(ZipFile &zip)
 
 Epub::Epub(const std::string &path) : m_path(path)
 {
+}
+
+// Load only enough metadata for the book-selection screen. This deliberately
+// skips the manifest, spine and NCX table of contents.
+bool Epub::load_title()
+{
+  ZipFile zip(m_path.c_str());
+  std::string content_opf_file;
+  if (!find_content_opf_file(zip, content_opf_file))
+  {
+    return false;
+  }
+  m_base_path = content_opf_file.substr(0, content_opf_file.find_last_of('/') + 1);
+  return parse_content_opf(zip, content_opf_file, true);
 }
 
 // load in the meta data for the epub file

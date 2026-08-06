@@ -1,6 +1,16 @@
 #include <unity.h>
 #include <EpubList/Epub.h>
 
+void test_epub_title_load(void)
+{
+  Epub epub("fixtures/oebps.epub");
+  TEST_ASSERT_TRUE_MESSAGE(epub.load_title(), "EPUB title load failed");
+  TEST_ASSERT_EQUAL_STRING("The Strange Case of Dr. Jekyll and Mr. Hyde",
+                           epub.get_title().c_str());
+  TEST_ASSERT_EQUAL(0, epub.get_spine_items_count());
+  TEST_ASSERT_EQUAL(0, epub.get_toc_items_count());
+}
+
 void test_epub_no_oebps_load(void)
 {
   Epub *epub = new Epub("fixtures/no_oebps.epub");

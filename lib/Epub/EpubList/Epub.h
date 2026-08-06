@@ -35,13 +35,14 @@ private:
   std::string m_base_path;
   // find the path for the content.opf file
   bool find_content_opf_file(ZipFile &zip, std::string &content_opf_file);
-  bool parse_content_opf(ZipFile &zip, std::string &content_opf_file);
+  bool parse_content_opf(ZipFile &zip, std::string &content_opf_file, bool title_only = false);
   bool parse_toc_ncx_file(ZipFile &zip);
 
 public:
   Epub(const std::string &path);
   ~Epub() {}
   std::string &get_base_path() { return m_base_path; }
+  bool load_title();
   bool load();
 
   const std::string &get_path() const { return m_path; }

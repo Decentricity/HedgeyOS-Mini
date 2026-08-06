@@ -15,6 +15,7 @@
 #include <algorithm>
 
 #include "Epub.h"
+#include "EpubCache.h"
 #include "Renderer/Renderer.h"
 #include "../RubbishHtmlParser/blocks/TextBlock.h"
 #include "./State.h"
@@ -26,13 +27,17 @@ class EpubToc
 {
 private:
   Renderer *renderer;
-  Epub *epub = nullptr;
   EpubListItem &selected_epub;
   EpubTocState &state;
+  EpubCache &cache;
+  std::vector<CachedChapter> chapters;
+  bool loaded = false;
   bool m_needs_redraw = false;
 
 public:
-  EpubToc(EpubListItem &selected_epub, EpubTocState &state, Renderer *renderer) : renderer(renderer), selected_epub(selected_epub), state(state){};
+  EpubToc(EpubListItem &selected_epub, EpubTocState &state, Renderer *renderer,
+          EpubCache &cache)
+      : renderer(renderer), selected_epub(selected_epub), state(state), cache(cache){};
   ~EpubToc() {}
   bool load();
   void next();
@@ -43,4 +48,5 @@ public:
   void render();
   void set_needs_redraw() { m_needs_redraw = true; }
   uint16_t get_selected_toc();
+  bool is_for(const EpubListItem &item) const;
 };
