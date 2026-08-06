@@ -3,11 +3,13 @@
 #include <freertos/queue.h>
 #include <esp_sleep.h>
 #include "config.h"
+#include "HedgeyNotepad.h"
 #include "EpubList/Epub.h"
 #include "EpubList/EpubCache.h"
 #include "EpubList/EpubList.h"
 #include "EpubList/EpubReader.h"
 #include "EpubList/EpubToc.h"
+#include <hedgehog.h>
 #include <hedgeyos_mini.h>
 #include <miniz.h>
 #include <RubbishHtmlParser/RubbishHtmlParser.h>
@@ -31,14 +33,14 @@ const char *TAG = "main";
 typedef enum
 {
   HOME_SCREEN,
+  NOTEPAD_SCREEN,
   SELECTING_EPUB,
   SELECTING_TABLE_CONTENTS,
   READING_EPUB
 } UIState;
 
-// UI objects and chapter data live only in normal RAM, so the view must also
-// start fresh on every boot instead of surviving reset in RTC memory.
-UIState ui_state = SELECTING_EPUB;
+// HedgeyOS always starts at its home screen after boot or reset.
+UIState ui_state = HOME_SCREEN;
 // the state data for the epub list and reader
 RTC_DATA_ATTR EpubListState epub_list_state;
 // the state data for the epub index list
@@ -46,6 +48,7 @@ RTC_DATA_ATTR EpubTocState epub_index_state;
 
 void handleEpub(Renderer *renderer, UIAction action);
 void handleHome(Renderer *renderer);
+void handleNotepad(Renderer *renderer);
 void handleEpubList(Renderer *renderer, UIAction action, bool needs_redraw);
 void handleEpubTableContents(Renderer *renderer, UIAction action, bool needs_redraw);
 
@@ -53,6 +56,7 @@ static EpubList *epub_list = nullptr;
 static EpubReader *reader = nullptr;
 static EpubToc *contents = nullptr;
 static EpubCache *epub_cache = nullptr;
+static HedgeyNotepad *notepad = nullptr;
 
 void save_reading_progress()
 {
@@ -186,18 +190,27 @@ int home_tiles_y(int page_height)
 
 void draw_home_title(Renderer *renderer, int page_width)
 {
-  static uint8_t unpacked[hedgeyos_mini_raw_size];
-  static bool is_unpacked = false;
-  if (!is_unpacked)
+  static uint8_t title_pixels[hedgeyos_mini_raw_size];
+  static uint8_t hedgehog_pixels[hedgehog_raw_size];
+  static bool title_is_unpacked = false;
+  static bool hedgehog_is_unpacked = false;
+  if (!title_is_unpacked)
   {
-    is_unpacked = tinfl_decompress_mem_to_mem(
-                      unpacked, sizeof(unpacked),
-                      hedgeyos_mini_data, sizeof(hedgeyos_mini_data), 0) !=
-                  TINFL_DECOMPRESS_MEM_TO_MEM_FAILED;
+    title_is_unpacked = tinfl_decompress_mem_to_mem(
+                            title_pixels, sizeof(title_pixels),
+                            hedgeyos_mini_data, sizeof(hedgeyos_mini_data), 0) !=
+                        TINFL_DECOMPRESS_MEM_TO_MEM_FAILED;
   }
-  if (!is_unpacked)
+  if (!hedgehog_is_unpacked)
   {
-    ESP_LOGE(TAG, "Could not unpack the home wordmark");
+    hedgehog_is_unpacked = tinfl_decompress_mem_to_mem(
+                               hedgehog_pixels, sizeof(hedgehog_pixels),
+                               hedgehog_data, sizeof(hedgehog_data), 0) !=
+                           TINFL_DECOMPRESS_MEM_TO_MEM_FAILED;
+  }
+  if (!title_is_unpacked || !hedgehog_is_unpacked)
+  {
+    ESP_LOGE(TAG, "Could not unpack the home artwork");
     return;
   }
 
@@ -207,9 +220,25 @@ void draw_home_title(Renderer *renderer, int page_width)
   {
     for (int x = 0; x < hedgeyos_mini_width; ++x)
     {
-      if (unpacked[y * hedgeyos_mini_stride + x / 8] & (1 << (x % 8)))
+      if (title_pixels[y * hedgeyos_mini_stride + x / 8] & (1 << (x % 8)))
       {
         renderer->draw_pixel(start_x + x, start_y + y, 0);
+      }
+    }
+  }
+
+  const int hedgehog_x = (page_width - hedgehog_width) / 2;
+  const int hedgehog_y = start_y + hedgeyos_mini_height + 16;
+  for (int y = 0; y < hedgehog_height; ++y)
+  {
+    for (int x = 0; x < hedgehog_width; ++x)
+    {
+      const int pixel_index = y * hedgehog_width + x;
+      const uint8_t packed = hedgehog_pixels[pixel_index / 2];
+      const uint8_t gray = ((pixel_index % 2 == 0) ? packed >> 4 : packed & 0x0F) * 17;
+      if (gray < 255)
+      {
+        renderer->draw_pixel(hedgehog_x + x, hedgehog_y + y, gray);
       }
     }
   }
@@ -245,7 +274,7 @@ void handleHome(Renderer *renderer)
   renderer->draw_text(read_center_x - renderer->get_text_width("Read") / 2,
                       icon_y + 90, "Read");
 
-  // Notepad and pen icon. Write is intentionally a visual placeholder for now.
+  // Notepad and pen icon.
   renderer->draw_rect(write_center_x - 48, icon_y, 82, 78, 0);
   renderer->fill_rect(write_center_x - 34, icon_y - 5, 10, 10, 0);
   renderer->fill_rect(write_center_x - 4, icon_y - 5, 10, 10, 0);
@@ -259,6 +288,16 @@ void handleHome(Renderer *renderer)
   renderer->draw_text(write_center_x - renderer->get_text_width("Write") / 2,
                       icon_y + 90, "Write");
 
+  draw_top_bar_controls(renderer);
+}
+
+void handleNotepad(Renderer *renderer)
+{
+  if (!notepad)
+  {
+    notepad = new HedgeyNotepad();
+  }
+  notepad->render(renderer);
   draw_top_bar_controls(renderer);
 }
 
@@ -456,7 +495,15 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
 
   if (top_bar_control == TOP_BAR_CLOSE)
   {
-    if (ui_state == SELECTING_EPUB)
+    if (ui_state == NOTEPAD_SCREEN)
+    {
+      ESP_LOGI("TOUCH", "Notepad close tap -> home");
+      notepad->save();
+      renderer->show_busy();
+      ui_state = HOME_SCREEN;
+      handleHome(renderer);
+    }
+    else if (ui_state == SELECTING_EPUB)
     {
       ESP_LOGI("TOUCH", "Book close tap -> home");
       handleEpubList(renderer, SHOW_HOME, false);
@@ -533,6 +580,29 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
       renderer->clear_screen();
       handleEpubList(renderer, NONE, true);
     }
+    else
+    {
+      const int write_x = tiles_x + HOME_TILE_WIDTH + HOME_TILE_GAP;
+      if (content_x >= write_x && content_x < write_x + HOME_TILE_WIDTH &&
+          content_y >= tiles_y && content_y < tiles_y + HOME_TILE_HEIGHT)
+      {
+        ESP_LOGI("TOUCH", "Write tile tap -> notepad");
+        renderer->show_busy();
+        ui_state = NOTEPAD_SCREEN;
+        handleNotepad(renderer);
+      }
+    }
+    return;
+  }
+
+  if (ui_state == NOTEPAD_SCREEN)
+  {
+    if (content_x >= 0 && content_x < page_width &&
+        content_y >= 0 && content_y < page_height &&
+        notepad && notepad->handle_touch(renderer, content_x, content_y))
+    {
+      handleNotepad(renderer);
+    }
     return;
   }
 
@@ -569,6 +639,9 @@ void handleUserInteraction(Renderer *renderer, const UIEvent &ui_event, bool nee
   case HOME_SCREEN:
     handleHome(renderer);
     break;
+  case NOTEPAD_SCREEN:
+    handleNotepad(renderer);
+    break;
   case READING_EPUB:
     handleEpub(renderer, ui_event.action);
     break;
@@ -579,11 +652,8 @@ void handleUserInteraction(Renderer *renderer, const UIEvent &ui_event, bool nee
     handleEpubList(renderer, ui_event.action, needs_redraw);
     break;
   default:
-    // RTC_NOINIT_ATTR can contain an undefined value after a cold boot. The
-    // legacy UI drew the book list through this default branch without fixing
-    // the state, which left coordinate-based touch dispatch with no valid UI.
-    ui_state = SELECTING_EPUB;
-    handleEpubList(renderer, ui_event.action, needs_redraw);
+    ui_state = HOME_SCREEN;
+    handleHome(renderer);
     break;
   }
 }
@@ -720,6 +790,10 @@ void main_task(void *param)
     save_reading_progress();
   }
   ESP_LOGI("main", "Saving state");
+  if (notepad)
+  {
+    notepad->save();
+  }
   // save the state of the renderer
   renderer->dehydrate();
   // turn off the filesystem

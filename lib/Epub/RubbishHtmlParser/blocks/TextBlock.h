@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../../Renderer/Renderer.h"
+#include <cstdint>
 #include <vector>
 #include "Block.h"
 

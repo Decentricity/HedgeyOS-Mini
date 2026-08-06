@@ -8,6 +8,7 @@
 #define ESP_LOGI(args...)
 #endif
 #include <stdio.h>
+#include <stdexcept>
 #include <string.h>
 #include <string>
 #include <list>
