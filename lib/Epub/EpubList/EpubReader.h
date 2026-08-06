@@ -18,10 +18,12 @@ private:
 
 public:
   EpubReader(EpubListItem &state, Renderer *renderer) : state(state), renderer(renderer){};
-  ~EpubReader() {}
+  ~EpubReader();
   bool load();
   void next();
   void prev();
+  void next_chapter();
+  void previous_chapter();
   void render();
   void set_state_section(uint16_t current_section);
 };

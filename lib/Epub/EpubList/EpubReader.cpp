@@ -15,6 +15,12 @@
 
 static const char *TAG = "EREADER";
 
+EpubReader::~EpubReader()
+{
+  delete parser;
+  delete epub;
+}
+
 bool EpubReader::load()
 {
   ESP_LOGD(TAG, "Before epub load: %d", esp_get_free_heap_size());
@@ -102,6 +108,42 @@ void EpubReader::prev()
     }
   }
   state.current_page--;
+}
+
+void EpubReader::next_chapter()
+{
+  for (int i = 0; i < epub->get_toc_items_count(); i++)
+  {
+    const int section = epub->get_spine_index_for_toc_index(i);
+    if (section > state.current_section)
+    {
+      set_state_section(section);
+      return;
+    }
+  }
+}
+
+void EpubReader::previous_chapter()
+{
+  int current_chapter = -1;
+  int previous_chapter = -1;
+  for (int i = 0; i < epub->get_toc_items_count(); i++)
+  {
+    const int section = epub->get_spine_index_for_toc_index(i);
+    if (section > state.current_section)
+    {
+      break;
+    }
+    if (section != current_chapter)
+    {
+      previous_chapter = current_chapter;
+      current_chapter = section;
+    }
+  }
+  if (previous_chapter >= 0)
+  {
+    set_state_section(previous_chapter);
+  }
 }
 
 void EpubReader::render()

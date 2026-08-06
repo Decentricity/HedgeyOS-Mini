@@ -6,7 +6,6 @@
 static const char *TAG = "PUBINDEX";
 #define PADDING 10
 #define ITEMS_PER_PAGE 8
-#define TOUCH_FEEDBACK_SIZE 14
 
 void EpubToc::next()
 {
@@ -84,19 +83,6 @@ bool EpubToc::select_visible_item_at(int y, int page_height)
   }
   state.selected_item = selected_item;
   return true;
-}
-
-void EpubToc::show_touch_feedback()
-{
-  const int cell_height = renderer->get_page_height() / ITEMS_PER_PAGE;
-  const int row = state.selected_item % ITEMS_PER_PAGE;
-  const int marker_x = renderer->get_page_width() - PADDING - TOUCH_FEEDBACK_SIZE;
-  const int marker_y = row * cell_height + PADDING;
-  renderer->fill_rect(marker_x, marker_y,
-                      TOUCH_FEEDBACK_SIZE, TOUCH_FEEDBACK_SIZE, 0);
-  renderer->flush_area(marker_x + renderer->get_margin_left(),
-                       marker_y + renderer->get_margin_top(),
-                       TOUCH_FEEDBACK_SIZE, TOUCH_FEEDBACK_SIZE);
 }
 
 bool EpubToc::load()
@@ -197,34 +183,8 @@ void EpubToc::render()
       // clean up the temporary index block
       delete title_block;
     }
-    // clear the selection box around the previous selected item
-    if (state.previous_selected_item == i)
-    {
-      for (int line = 0; line < 3; line++)
-      {
-        renderer->draw_rect(line, ypos + PADDING / 2 + line, renderer->get_page_width() - 2 * line, cell_height - PADDING - 2 * line, 255);
-      }
-    }
-    // draw the selection box around the current selection
-    if (state.selected_item == i)
-    {
-      for (int line = 0; line < 3; line++)
-      {
-        renderer->draw_rect(line, ypos + PADDING / 2 + line, renderer->get_page_width() - 2 * line, cell_height - PADDING - 2 * line, 0);
-      }
-    }
     ypos += cell_height;
   }
-  // The chapter list is the only screen with a touch-only close control.
-  // Draw it in the unused top margin, leaving the content geometry unchanged.
-  const int saved_margin_top = renderer->get_margin_top();
-  const int saved_margin_left = renderer->get_margin_left();
-  renderer->set_margin_top(0);
-  renderer->set_margin_left(0);
-  renderer->draw_text(5, 0, "[X]");
-  renderer->set_margin_top(saved_margin_top);
-  renderer->set_margin_left(saved_margin_left);
-  state.previous_selected_item = state.selected_item;
   state.previous_rendered_page = current_page;
 }
 
