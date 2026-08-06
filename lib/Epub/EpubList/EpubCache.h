@@ -17,6 +17,9 @@ struct CachedBook
   uint64_t size;
   int64_t mtime;
   bool toc_cached;
+  bool resume_cached;
+  uint16_t resume_section;
+  uint16_t resume_page;
   bool seen;
   std::vector<CachedChapter> chapters;
 };
@@ -43,6 +46,8 @@ public:
                    const std::string &title);
   bool get_chapters(const std::string &path, uint64_t size, int64_t mtime,
                     std::vector<CachedChapter> &chapters) const;
+  bool get_resume(const std::string &path, uint16_t &section, uint16_t &page) const;
+  void store_resume(const std::string &path, uint16_t section, uint16_t page);
   void store_chapters(const std::string &path, uint64_t size, int64_t mtime,
                       const std::string &title,
                       const std::vector<CachedChapter> &chapters);

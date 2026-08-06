@@ -163,6 +163,11 @@ bool EpubList::load(const char *path)
       item.path[MAX_PATH_SIZE - 1] = '\0';
       strncpy(item.title, title.c_str(), MAX_TITLE_SIZE - 1);
       item.title[MAX_TITLE_SIZE - 1] = '\0';
+      // Reading progress is restored from the validated SD cache only when
+      // this book is opened; never trust stale RTC values after a restart.
+      item.current_section = 0;
+      item.current_page = 0;
+      item.pages_in_current_section = 0;
       state.num_epubs++;
       if (state.num_epubs == MAX_EPUB_LIST_SIZE)
       {

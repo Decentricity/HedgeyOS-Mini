@@ -16,7 +16,7 @@
 namespace
 {
 const char *TAG = "EPUB_CACHE";
-const uint8_t CACHE_MAGIC[8] = {'A', '1', '4', 'E', 'P', 'C', '0', '1'};
+const uint8_t CACHE_MAGIC[8] = {'A', '1', '4', 'E', 'P', 'C', '0', '2'};
 const size_t CACHE_HEADER_SIZE = 16;
 const size_t MAX_CACHE_SIZE = 512 * 1024;
 const uint16_t MAX_CACHE_BOOKS = 64;
@@ -136,18 +136,23 @@ bool EpubCache::read_file(const std::string &path, std::vector<CachedBook> &resu
   {
     CachedBook book = {};
     uint8_t toc_cached = 0;
+    uint8_t resume_cached = 0;
     uint16_t chapter_count = 0;
     if (!read_string(data, offset, book.path, 1024) ||
         !read_string(data, offset, book.title, 4096) ||
         !read_number(data, offset, book.size) ||
         !read_number(data, offset, book.mtime) ||
         !read_number(data, offset, toc_cached) ||
+        !read_number(data, offset, resume_cached) ||
+        !read_number(data, offset, book.resume_section) ||
+        !read_number(data, offset, book.resume_page) ||
         !read_number(data, offset, chapter_count) ||
         chapter_count > MAX_CACHE_CHAPTERS)
     {
       return false;
     }
     book.toc_cached = toc_cached != 0;
+    book.resume_cached = resume_cached != 0;
     book.seen = false;
     book.chapters.reserve(chapter_count);
     for (uint16_t chapter_index = 0; chapter_index < chapter_count; chapter_index++)
@@ -203,6 +208,9 @@ CachedBook &EpubCache::upsert(const std::string &path, uint64_t size, int64_t mt
         book.title.clear();
         book.chapters.clear();
         book.toc_cached = false;
+        book.resume_cached = false;
+        book.resume_section = 0;
+        book.resume_page = 0;
         dirty = true;
       }
       book.seen = true;
@@ -214,6 +222,7 @@ CachedBook &EpubCache::upsert(const std::string &path, uint64_t size, int64_t mt
   book.size = size;
   book.mtime = mtime;
   book.toc_cached = false;
+  book.resume_cached = false;
   book.seen = true;
   books.push_back(book);
   dirty = true;
@@ -272,6 +281,38 @@ bool EpubCache::get_chapters(const std::string &path, uint64_t size, int64_t mti
   return true;
 }
 
+bool EpubCache::get_resume(const std::string &path, uint16_t &section, uint16_t &page) const
+{
+  for (const auto &book : books)
+  {
+    if (book.path == path && book.resume_cached)
+    {
+      section = book.resume_section;
+      page = book.resume_page;
+      return true;
+    }
+  }
+  return false;
+}
+
+void EpubCache::store_resume(const std::string &path, uint16_t section, uint16_t page)
+{
+  for (auto &book : books)
+  {
+    if (book.path == path)
+    {
+      if (!book.resume_cached || book.resume_section != section || book.resume_page != page)
+      {
+        book.resume_cached = true;
+        book.resume_section = section;
+        book.resume_page = page;
+        dirty = true;
+      }
+      return;
+    }
+  }
+}
+
 void EpubCache::store_chapters(const std::string &path, uint64_t size, int64_t mtime,
                                const std::string &title,
                                const std::vector<CachedChapter> &chapters)
@@ -299,6 +340,9 @@ bool EpubCache::save()
     append_number(payload, book.size);
     append_number(payload, book.mtime);
     append_number(payload, (uint8_t)(book.toc_cached ? 1 : 0));
+    append_number(payload, (uint8_t)(book.resume_cached ? 1 : 0));
+    append_number(payload, book.resume_section);
+    append_number(payload, book.resume_page);
     append_number(payload, (uint16_t)book.chapters.size());
     for (const auto &chapter : book.chapters)
     {

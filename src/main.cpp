@@ -50,6 +50,20 @@ static EpubReader *reader = nullptr;
 static EpubToc *contents = nullptr;
 static EpubCache *epub_cache = nullptr;
 
+void save_reading_progress()
+{
+  if (ui_state != READING_EPUB || !epub_cache ||
+      epub_list_state.num_epubs <= 0 ||
+      epub_list_state.selected_item < 0 ||
+      epub_list_state.selected_item >= epub_list_state.num_epubs)
+  {
+    return;
+  }
+  EpubListItem &item = epub_list_state.epub_list[epub_list_state.selected_item];
+  epub_cache->store_resume(item.path, item.current_section, item.current_page);
+  epub_cache->save();
+}
+
 namespace
 {
 const int PAGE_BUTTON_WIDTH = 44;
@@ -237,8 +251,25 @@ void handleEpubList(Renderer *renderer, UIAction action, bool needs_redraw)
     epub_list->next_page();
     break;
   case SELECT:
-    // switch to reading the epub
-    // setup the reader state
+  {
+    EpubListItem &item = epub_list_state.epub_list[epub_list_state.selected_item];
+    uint16_t resume_section = 0;
+    uint16_t resume_page = 0;
+    if (epub_cache->get_resume(item.path, resume_section, resume_page))
+    {
+      item.current_section = resume_section;
+      item.current_page = resume_page;
+      item.pages_in_current_section = 0;
+      ui_state = READING_EPUB;
+      renderer->clear_screen();
+      delete reader;
+      reader = nullptr;
+      handleEpub(renderer, NONE);
+      return;
+    }
+
+    // A new book opens at its chapter selector. Books with saved progress
+    // resume directly above.
     ui_state = SELECTING_TABLE_CONTENTS;
     // create the reader and load the book
     if (!contents || !contents->is_for(epub_list_state.epub_list[epub_list_state.selected_item]))
@@ -254,6 +285,7 @@ void handleEpubList(Renderer *renderer, UIAction action, bool needs_redraw)
     contents->set_needs_redraw();
     handleEpubTableContents(renderer, NONE, true);
     return;
+  }
   case NONE:
   default:
     // nothing to do
@@ -411,12 +443,12 @@ void main_task(void *param)
     // rename, promote it back to the canonical cache path now.
     epub_cache->save();
   }
-  else
-  {
-    // The RTC book list may have survived a reset from an older firmware. If
-    // the persistent index is absent or invalid, rebuild it once from the SD.
-    epub_list_state.is_loaded = false;
-  }
+  // The framebuffer and C++ UI objects do not survive every kind of reset,
+  // even when this RTC flag does. Rebuild the lightweight list from the SD
+  // cache and force its first page to redraw on every boot.
+  epub_list_state.is_loaded = false;
+  epub_list_state.previous_rendered_page = -1;
+  epub_list_state.previous_selected_item = -1;
 
   // battery details
   ESP_LOGI("main", "Starting battery monitor");
@@ -494,6 +526,8 @@ void main_task(void *param)
       draw_battery_level(renderer, battery->get_voltage(), battery->get_percentage());
     }
     renderer->flush_display();
+    // Persist only after the requested page has actually reached the panel.
+    save_reading_progress();
   }
   ESP_LOGI("main", "Saving state");
   // save the state of the renderer

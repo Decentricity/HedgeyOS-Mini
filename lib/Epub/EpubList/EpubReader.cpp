@@ -43,6 +43,12 @@ void EpubReader::parse_and_layout_current_section()
     ESP_LOGI(TAG, "Parse and render section %d", state.current_section);
     ESP_LOGD(TAG, "Before read html: %d", esp_get_free_heap_size());
 
+    const int section_count = epub->get_spine_items_count();
+    if (section_count > 0 && state.current_section >= section_count)
+    {
+      state.current_section = section_count - 1;
+    }
+
     // if spine item is not found here then it will return get_spine_item(0)
     // so it does not crashes when you want to go after last page (out of vector range)
     std::string item = epub->get_spine_item(state.current_section);
@@ -55,6 +61,16 @@ void EpubReader::parse_and_layout_current_section()
     parser->layout(renderer, epub);
     ESP_LOGD(TAG, "After layout: %d", esp_get_free_heap_size());
     state.pages_in_current_section = parser->get_page_count();
+    if (state.pages_in_current_section == 0)
+    {
+      state.current_page = 0;
+    }
+    else if (state.current_page >= state.pages_in_current_section)
+    {
+      // Layout can change when fonts or margins change, so an older saved
+      // page may no longer exist in this section.
+      state.current_page = state.pages_in_current_section - 1;
+    }
   }
 }
 
@@ -103,4 +119,8 @@ void EpubReader::render()
 void EpubReader::set_state_section(uint16_t current_section) {
   ESP_LOGI(TAG, "go to section:%d", current_section);
   state.current_section = current_section;
+  state.current_page = 0;
+  state.pages_in_current_section = 0;
+  delete parser;
+  parser = nullptr;
 }
