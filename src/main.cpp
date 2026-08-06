@@ -33,8 +33,9 @@ typedef enum
   READING_EPUB
 } UIState;
 
-// default to showing the list of epubs to the user
-RTC_NOINIT_ATTR UIState ui_state = SELECTING_EPUB;
+// UI objects and chapter data live only in normal RAM, so the view must also
+// start fresh on every boot instead of surviving reset in RTC memory.
+UIState ui_state = SELECTING_EPUB;
 // the state data for the epub list and reader
 RTC_DATA_ATTR EpubListState epub_list_state;
 // the state data for the epub index list
