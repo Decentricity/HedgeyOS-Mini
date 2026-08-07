@@ -22,6 +22,7 @@ public:
     int rssi;
     bool likely_keyboard;
     bool paired;
+    bool classic;
   };
 
   typedef std::function<void(Event)> NotifyCallback;

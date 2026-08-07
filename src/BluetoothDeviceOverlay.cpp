@@ -65,11 +65,11 @@ void BluetoothDeviceOverlay::render(Renderer *renderer) const
 
   if (is_scanning)
   {
-    renderer->draw_text(10, LIST_TOP + 18, "Scanning for nearby BLE devices...");
+    renderer->draw_text(10, LIST_TOP + 18, "Scanning for nearby Bluetooth devices...");
   }
   else if (items.empty())
   {
-    renderer->draw_text(10, LIST_TOP + 18, "No BLE devices found.");
+    renderer->draw_text(10, LIST_TOP + 18, "No Bluetooth devices found.");
     renderer->draw_text(10, LIST_TOP + 62, "Put keyboard in pairing mode.");
     renderer->draw_text(10, LIST_TOP + 96, "Close with X, then tap status to rescan.");
   }

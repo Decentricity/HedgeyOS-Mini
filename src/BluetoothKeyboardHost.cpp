@@ -4,8 +4,10 @@
 #include <cstring>
 #include <cstdio>
 #include <esp_bt.h>
+#include <esp_bt_device.h>
 #include <esp_bt_main.h>
 #include <esp_gap_ble_api.h>
+#include <esp_gap_bt_api.h>
 #include <esp_gattc_api.h>
 #include <esp_hid_common.h>
 #include <esp_hidh.h>
@@ -24,6 +26,8 @@
 namespace
 {
 const char *TAG = "BT_KEYBOARD";
+const char *DEVICE_NAME = "HedgeyOS Mini";
+const uint16_t CLASSIC_HID_UUID = 0x1124;
 const uint32_t STORE_MAGIC = 0x484B4231;
 const int MAX_STORED = 5;
 const int MAX_SCAN_RESULTS = 24;
@@ -31,6 +35,7 @@ const EventBits_t BLE_PARAMS_READY = 1 << 0;
 const EventBits_t BLE_SCAN_DONE = 1 << 1;
 const EventBits_t OPEN_OK = 1 << 2;
 const EventBits_t OPEN_FAILED = 1 << 3;
+const EventBits_t BT_SCAN_DONE = 1 << 4;
 
 struct StoredDevice
 {
@@ -205,7 +210,11 @@ struct BluetoothKeyboardHost::Impl
       result.rssi = rssi;
       result.likely_keyboard = likely_keyboard;
       result.has_name = has_name;
-      strncpy(result.name, name ? name : "Unnamed BLE device", sizeof(result.name) - 1);
+      strncpy(result.name,
+              name ? name
+                   : (transport == ESP_HID_TRANSPORT_BT ? "Unnamed Classic device"
+                                                        : "Unnamed BLE device"),
+              sizeof(result.name) - 1);
       result.name[sizeof(result.name) - 1] = 0;
     }
     else
@@ -417,9 +426,12 @@ struct BluetoothKeyboardHost::Impl
           memcpy(name_text, name, copy_length);
           name_text[copy_length] = 0;
         }
-        self->add_scan_result(param->scan_rst.bda, ESP_HID_TRANSPORT_BLE,
-                              param->scan_rst.ble_addr_type, param->scan_rst.rssi,
-                              name_text, likely_keyboard, has_name);
+        // Keep non-HID BLE devices out of the chooser so Classic HID keyboards
+        // are not drowned by phones/headsets advertising only GAP/GATT.
+        if (likely_keyboard)
+          self->add_scan_result(param->scan_rst.bda, ESP_HID_TRANSPORT_BLE,
+                                param->scan_rst.ble_addr_type, param->scan_rst.rssi,
+                                name_text, likely_keyboard, has_name);
       }
     }
     else if (event == ESP_GAP_BLE_PASSKEY_NOTIF_EVT)
@@ -432,6 +444,119 @@ struct BluetoothKeyboardHost::Impl
     else if (event == ESP_GAP_BLE_SEC_REQ_EVT)
       esp_ble_gap_security_rsp(param->ble_security.ble_req.bd_addr, true);
     else if (event == ESP_GAP_BLE_AUTH_CMPL_EVT && param->ble_security.auth_cmpl.success)
+      self->set_status("Keyboard: paired", false);
+  }
+
+  static bool eir_has_hid_uuid(const uint8_t *eir)
+  {
+    if (!eir)
+      return false;
+    uint8_t length = 0;
+    uint8_t *data = esp_bt_gap_resolve_eir_data(const_cast<uint8_t *>(eir),
+                                                ESP_BT_EIR_TYPE_CMPL_16BITS_UUID, &length);
+    if (!data)
+      data = esp_bt_gap_resolve_eir_data(const_cast<uint8_t *>(eir),
+                                          ESP_BT_EIR_TYPE_INCMPL_16BITS_UUID, &length);
+    for (uint8_t offset = 0; data && offset + 1 < length; offset += 2)
+      if (static_cast<uint16_t>(data[offset] | (data[offset + 1] << 8)) == CLASSIC_HID_UUID)
+        return true;
+    return false;
+  }
+
+  static void bt_gap_callback(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
+  {
+    Impl *self = instance;
+    if (!self)
+      return;
+    if (event == ESP_BT_GAP_DISC_STATE_CHANGED_EVT)
+    {
+      if (param->disc_st_chg.state == ESP_BT_GAP_DISCOVERY_STOPPED)
+        xEventGroupSetBits(self->events, BT_SCAN_DONE);
+    }
+    else if (event == ESP_BT_GAP_DISC_RES_EVT)
+    {
+      uint32_t cod_value = 0;
+      int8_t rssi = 0;
+      const uint8_t *name = nullptr;
+      uint8_t name_length = 0;
+      bool has_hid_uuid = false;
+      const uint8_t *eir = nullptr;
+      for (int i = 0; i < param->disc_res.num_prop; ++i)
+      {
+        esp_bt_gap_dev_prop_t *prop = &param->disc_res.prop[i];
+        if (prop->type == ESP_BT_GAP_DEV_PROP_BDNAME)
+        {
+          name = static_cast<const uint8_t *>(prop->val);
+          name_length = strlen(reinterpret_cast<const char *>(name));
+        }
+        else if (prop->type == ESP_BT_GAP_DEV_PROP_RSSI)
+          rssi = *static_cast<int8_t *>(prop->val);
+        else if (prop->type == ESP_BT_GAP_DEV_PROP_COD)
+          memcpy(&cod_value, prop->val, sizeof(uint32_t));
+        else if (prop->type == ESP_BT_GAP_DEV_PROP_EIR)
+        {
+          eir = static_cast<const uint8_t *>(prop->val);
+          has_hid_uuid = eir_has_hid_uuid(eir);
+          if (!name)
+          {
+            uint8_t length = 0;
+            uint8_t *data = esp_bt_gap_resolve_eir_data(const_cast<uint8_t *>(eir),
+                                                        ESP_BT_EIR_TYPE_CMPL_LOCAL_NAME, &length);
+            if (!data)
+              data = esp_bt_gap_resolve_eir_data(const_cast<uint8_t *>(eir),
+                                                  ESP_BT_EIR_TYPE_SHORT_LOCAL_NAME, &length);
+            if (data && length)
+            {
+              name = data;
+              name_length = length;
+            }
+          }
+          if (!has_hid_uuid)
+            has_hid_uuid = eir_has_hid_uuid(eir);
+        }
+      }
+      const uint8_t major = (cod_value & ESP_BT_COD_MAJOR_DEV_BIT_MASK) >>
+                            ESP_BT_COD_MAJOR_DEV_BIT_OFFSET;
+      const bool peripheral = major == ESP_BT_COD_MAJOR_DEV_PERIPHERAL;
+      // Cyberdeck2024 advertises as a phone with Classic HID 0x1124. Inquiry
+      // often lacks the UUID in EIR, so include phone/computer majors too.
+      const bool host_like = major == ESP_BT_COD_MAJOR_DEV_PHONE ||
+                             major == ESP_BT_COD_MAJOR_DEV_COMPUTER;
+      const bool likely_keyboard = peripheral || has_hid_uuid;
+      if (!(likely_keyboard || host_like || has_hid_uuid))
+        return;
+      if (!(name && name_length) && !likely_keyboard && !has_hid_uuid)
+        return;
+
+      char name_text[40];
+      snprintf(name_text, sizeof(name_text), "BT %02X:%02X:%02X:%02X:%02X:%02X",
+               param->disc_res.bda[0], param->disc_res.bda[1], param->disc_res.bda[2],
+               param->disc_res.bda[3], param->disc_res.bda[4], param->disc_res.bda[5]);
+      bool has_name = false;
+      if (name && name_length)
+      {
+        const size_t copy_length = std::min<size_t>(name_length, sizeof(name_text) - 1);
+        memcpy(name_text, name, copy_length);
+        name_text[copy_length] = 0;
+        has_name = true;
+      }
+      self->add_scan_result(param->disc_res.bda, ESP_HID_TRANSPORT_BT, 0, rssi,
+                            name_text, likely_keyboard || has_hid_uuid || host_like,
+                            has_name);
+    }
+    else if (event == ESP_BT_GAP_KEY_NOTIF_EVT)
+      self->set_pairing_code(param->key_notif.passkey);
+    else if (event == ESP_BT_GAP_CFM_REQ_EVT)
+    {
+      self->set_pairing_code(param->cfm_req.num_val);
+      esp_bt_gap_ssp_confirm_reply(param->cfm_req.bda, true);
+    }
+    else if (event == ESP_BT_GAP_PIN_REQ_EVT)
+    {
+      esp_bt_pin_code_t pin_code = {'0', '0', '0', '0'};
+      esp_bt_gap_pin_reply(param->pin_req.bda, true, 4, pin_code);
+    }
+    else if (event == ESP_BT_GAP_AUTH_CMPL_EVT && param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS)
       self->set_status("Keyboard: paired", false);
   }
 
@@ -448,12 +573,25 @@ struct BluetoothKeyboardHost::Impl
     load_stored();
     esp_bt_controller_config_t controller_config = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
     if (esp_bt_controller_init(&controller_config) != ESP_OK ||
-        esp_bt_controller_enable(ESP_BT_MODE_BLE) != ESP_OK ||
+        esp_bt_controller_enable(ESP_BT_MODE_BTDM) != ESP_OK ||
         esp_bluedroid_init() != ESP_OK || esp_bluedroid_enable() != ESP_OK)
     {
       set_status("Keyboard: Bluetooth error");
       return false;
     }
+
+    esp_bt_dev_set_device_name(DEVICE_NAME);
+    esp_ble_gap_set_device_name(DEVICE_NAME);
+
+    esp_bt_sp_param_t sp_param = ESP_BT_SP_IOCAP_MODE;
+    esp_bt_io_cap_t bt_iocap = ESP_BT_IO_CAP_IO;
+    esp_bt_gap_set_security_param(sp_param, &bt_iocap, sizeof(bt_iocap));
+    esp_bt_pin_type_t pin_type = ESP_BT_PIN_TYPE_VARIABLE;
+    esp_bt_pin_code_t pin_code = {};
+    esp_bt_gap_set_pin(pin_type, 0, pin_code);
+    esp_bt_gap_register_callback(bt_gap_callback);
+    esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_NON_DISCOVERABLE);
+
     esp_ble_gap_register_callback(ble_gap_callback);
     esp_ble_gattc_register_callback(esp_hidh_gattc_event_handler);
 
@@ -466,7 +604,6 @@ struct BluetoothKeyboardHost::Impl
     esp_ble_gap_set_security_param(ESP_BLE_SM_SET_INIT_KEY, &keys, sizeof(keys));
     esp_ble_gap_set_security_param(ESP_BLE_SM_SET_RSP_KEY, &keys, sizeof(keys));
     esp_ble_gap_set_security_param(ESP_BLE_SM_MAX_KEY_SIZE, &key_size, sizeof(key_size));
-    esp_ble_gap_set_device_name("HedgeyOS Mini");
 
     esp_hidh_config_t hidh_config = {};
     hidh_config.callback = hidh_callback;
@@ -511,7 +648,7 @@ struct BluetoothKeyboardHost::Impl
       return;
     }
     EventBits_t result = xEventGroupWaitBits(events, OPEN_OK | OPEN_FAILED, pdTRUE,
-                                              pdFALSE, pdMS_TO_TICKS(12000));
+                                              pdFALSE, pdMS_TO_TICKS(20000));
     if (!(result & OPEN_OK))
     {
       esp_hidh_dev_close(opening);
@@ -528,9 +665,11 @@ struct BluetoothKeyboardHost::Impl
     }
 
     scan_count = 0;
-    xEventGroupClearBits(events, BLE_PARAMS_READY | BLE_SCAN_DONE |
+    xEventGroupClearBits(events, BLE_PARAMS_READY | BLE_SCAN_DONE | BT_SCAN_DONE |
                                   OPEN_OK | OPEN_FAILED);
     set_status(pairing ? "Keyboard: pairing..." : "Keyboard: reconnecting...", false);
+
+    bool ble_started = false;
     esp_ble_scan_params_t params = {};
     params.scan_type = BLE_SCAN_TYPE_ACTIVE;
     params.own_addr_type = BLE_ADDR_TYPE_PUBLIC;
@@ -541,12 +680,23 @@ struct BluetoothKeyboardHost::Impl
     if (esp_ble_gap_set_scan_params(&params) == ESP_OK)
     {
       xEventGroupWaitBits(events, BLE_PARAMS_READY, pdTRUE, pdTRUE, pdMS_TO_TICKS(1500));
-      if (esp_ble_gap_start_scanning(5) != ESP_OK)
-        xEventGroupSetBits(events, BLE_SCAN_DONE);
+      if (esp_ble_gap_start_scanning(5) == ESP_OK)
+        ble_started = true;
     }
-    else
+    if (!ble_started)
       xEventGroupSetBits(events, BLE_SCAN_DONE);
-    xEventGroupWaitBits(events, BLE_SCAN_DONE, pdTRUE, pdTRUE, pdMS_TO_TICKS(7000));
+
+    bool classic_started = false;
+    // ~5 seconds of Classic inquiry (duration unit is 1.28s)
+    if (esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 4, 0) == ESP_OK)
+      classic_started = true;
+    if (!classic_started)
+      xEventGroupSetBits(events, BT_SCAN_DONE);
+
+    xEventGroupWaitBits(events, BLE_SCAN_DONE | BT_SCAN_DONE, pdTRUE, pdTRUE,
+                        pdMS_TO_TICKS(9000));
+    esp_ble_gap_stop_scanning();
+    esp_bt_gap_cancel_discovery();
 
     if (pairing)
     {
@@ -555,9 +705,11 @@ struct BluetoothKeyboardHost::Impl
                 {
                   if (left.likely_keyboard != right.likely_keyboard)
                     return left.likely_keyboard;
+                  if (left.transport != right.transport)
+                    return left.transport == ESP_HID_TRANSPORT_BT;
                   return left.rssi > right.rssi;
                 });
-      set_status(scan_count ? "Keyboard: select a BLE device" :
+      set_status(scan_count ? "Keyboard: select a device" :
                               "Keyboard: none found; tap to retry", false);
       notify(DEVICES_READY);
       return;
@@ -646,6 +798,7 @@ std::vector<BluetoothKeyboardHost::DeviceInfo> BluetoothKeyboardHost::devices() 
     info.rssi = snapshot[i].rssi;
     info.likely_keyboard = snapshot[i].likely_keyboard;
     info.paired = false;
+    info.classic = snapshot[i].transport == ESP_HID_TRANSPORT_BT;
     for (int stored_index = 0; stored_index < saved.count; ++stored_index)
       if (saved.devices[stored_index].transport == snapshot[i].transport &&
           same_address(saved.devices[stored_index].address, snapshot[i].address))

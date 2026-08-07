@@ -720,7 +720,9 @@ void handleUserInteraction(Renderer *renderer, const UIEvent &ui_event, bool nee
         item.name = it->name;
         char detail[56];
         snprintf(detail, sizeof(detail), "%s%s%d dBm",
-                 it->likely_keyboard ? "Keyboard  " : "BLE device  ",
+                 it->likely_keyboard
+                     ? (it->classic ? "Classic keyboard  " : "BLE keyboard  ")
+                     : (it->classic ? "Classic device  " : "BLE device  "),
                  it->paired ? "Paired  " : "", it->rssi);
         item.detail = detail;
         overlay_devices.push_back(item);

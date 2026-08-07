@@ -3,7 +3,7 @@
 HedgeyOS Mini is a tiny, touch-first environment for the original M5Paper. It boots directly to a home screen and currently includes:
 
 - **Read** — a fast, SD-backed EPUB reader based on atomic14's DIY ESP32 ePub Reader.
-- **Write** — a persistent ruled notepad with a large touch QWERTY keyboard adapted from M5Stack's official M5Paper FactoryTest keyboard, plus optional BLE keyboard input.
+- **Write** — a persistent ruled notepad with a large touch QWERTY keyboard adapted from M5Stack's official M5Paper FactoryTest keyboard, plus optional Bluetooth Classic/BLE keyboard input.
 
 The home screen uses the supplied Hedgey artwork, rendered in 16-level grayscale for the e-ink panel. The reader retains rocker navigation while adding touch book/chapter selection, denser two-column book lists, page and chapter navigation, resume positions, and a consistent top bar.
 
@@ -13,9 +13,11 @@ This build targets the **first-generation M5Paper**. EPUB files remain on the SD
 
 ## Bluetooth keyboards
 
-Opening Write makes one quiet, five-second reconnect attempt for saved BLE HID keyboards. A tiny line below the soft keyboard shows the result; the on-screen keyboard remains available whether or not a hardware keyboard is found. HedgeyOS Mini does not retry in the background. Put a new keyboard in its pairing mode, then tap the status line to open a reusable BLE device chooser. After the scan, tap the named device you want HedgeyOS Mini to connect and pair with. Likely keyboards are listed first, saved devices are marked, the top arrows page through longer lists, and X closes the chooser. Tapping the status line again performs a new scan.
+The M5Paper advertises itself as **HedgeyOS Mini**. Opening Write makes one quiet reconnect attempt for saved Bluetooth keyboards (Classic HID and BLE HID). A tiny line below the soft keyboard shows the result; the on-screen keyboard remains available whether or not a hardware keyboard is found. HedgeyOS Mini does not retry in the background. Put a new keyboard in its pairing/discoverable mode, then tap the status line to open a reusable Bluetooth device chooser. After the dual-mode scan, tap the named device you want HedgeyOS Mini to connect and pair with. Likely keyboards are listed first, Classic and BLE devices are labeled, saved devices are marked, the top arrows page through longer lists, and X closes the chooser. Tapping the status line again performs a new scan.
 
 The first successful pairing may display a six-digit code to type on the keyboard followed by Enter. Bonding data and an ordered list of up to five keyboards are retained in internal NVS, so subsequent sessions reconnect without repeating the code. When several saved keyboards are nearby, the earliest saved reachable keyboard is selected.
+
+Custom Classic HID boards such as Cyberdeck2024 are supported; BLE-only scanners cannot see them.
 
 ## Build
 
