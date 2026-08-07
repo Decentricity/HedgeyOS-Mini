@@ -89,6 +89,7 @@ struct BluetoothKeyboardHost::Impl
   bool connected = false;
   bool scanning = false;
   bool caps_lock = false;
+  volatile bool pairing_requested = false;
   esp_hidh_dev_t *device = nullptr;
   uint8_t previous_keys[6] = {};
   char status_text[72] = {};
@@ -193,21 +194,35 @@ struct BluetoothKeyboardHost::Impl
     portEXIT_CRITICAL(&scan_lock);
   }
 
-  int choose_result()
+  int choose_result(bool pairing)
   {
+    if (pairing)
+    {
+      int strongest_new = -1;
+      if (stored.count < MAX_STORED)
+        for (int i = 0; i < scan_count; ++i)
+          if (stored_index(scan_results[i].address, scan_results[i].transport) < 0 &&
+            (strongest_new < 0 || scan_results[i].rssi > scan_results[strongest_new].rssi))
+            strongest_new = i;
+      if (strongest_new >= 0)
+        return strongest_new;
+      // A status-line tap also acts as a manual reconnect attempt for a
+      // keyboard that was switched on after Write first opened.
+      for (int stored_position = 0; stored_position < stored.count; ++stored_position)
+        for (int result_position = 0; result_position < scan_count; ++result_position)
+          if (stored.devices[stored_position].transport == scan_results[result_position].transport &&
+              same_address(stored.devices[stored_position].address, scan_results[result_position].address))
+            return result_position;
+      return -1;
+    }
+
     for (int stored_position = 0; stored_position < stored.count; ++stored_position)
       for (int result_position = 0; result_position < scan_count; ++result_position)
         if (stored.devices[stored_position].transport == scan_results[result_position].transport &&
             same_address(stored.devices[stored_position].address, scan_results[result_position].address))
           return result_position;
 
-    if (stored.count >= MAX_STORED)
-      return -1;
-    int strongest = -1;
-    for (int i = 0; i < scan_count; ++i)
-      if (strongest < 0 || scan_results[i].rssi > scan_results[strongest].rssi)
-        strongest = i;
-    return strongest;
+    return -1;
   }
 
   static void input_timer_callback(TimerHandle_t timer)
@@ -323,7 +338,8 @@ struct BluetoothKeyboardHost::Impl
         self->device = nullptr;
         self->connected = false;
         memset(self->previous_keys, 0, sizeof(self->previous_keys));
-        self->set_status("Keyboard: disconnected");
+        self->set_status(self->pairing_requested ? "Keyboard: pairing..." :
+                                                   "Keyboard: disconnected");
       }
       xEventGroupSetBits(self->events, OPEN_FAILED);
     }
@@ -429,12 +445,25 @@ struct BluetoothKeyboardHost::Impl
     return true;
   }
 
-  void scan_and_connect()
+  void scan_and_connect(bool pairing)
   {
+    if (!pairing && stored.count == 0)
+    {
+      set_status("Keyboard: tap here to pair");
+      return;
+    }
+
+    if (pairing && connected && device)
+    {
+      xEventGroupClearBits(events, OPEN_FAILED);
+      esp_hidh_dev_close(device);
+      xEventGroupWaitBits(events, OPEN_FAILED, pdTRUE, pdTRUE, pdMS_TO_TICKS(2000));
+    }
+
     scan_count = 0;
     xEventGroupClearBits(events, BLE_PARAMS_READY | BLE_SCAN_DONE |
                                   OPEN_OK | OPEN_FAILED);
-    set_status("Keyboard: searching...", false);
+    set_status(pairing ? "Keyboard: pairing..." : "Keyboard: reconnecting...", false);
     esp_ble_scan_params_t params = {};
     params.scan_type = BLE_SCAN_TYPE_ACTIVE;
     params.own_addr_type = BLE_ADDR_TYPE_PUBLIC;
@@ -452,11 +481,14 @@ struct BluetoothKeyboardHost::Impl
       xEventGroupSetBits(events, BLE_SCAN_DONE);
     xEventGroupWaitBits(events, BLE_SCAN_DONE, pdTRUE, pdTRUE, pdMS_TO_TICKS(7000));
 
-    const int selected = choose_result();
+    const int selected = choose_result(pairing);
     if (selected < 0)
     {
-      set_status(stored.count >= MAX_STORED ? "Keyboard: 5 paired; none found" :
-                                             "Keyboard: none found");
+      if (pairing)
+        set_status(stored.count >= MAX_STORED ? "Keyboard: 5 paired (limit)" :
+                                               "Keyboard: none found; tap to retry");
+      else
+        set_status("Keyboard: saved device not found");
       return;
     }
     char message[72];
@@ -483,8 +515,16 @@ struct BluetoothKeyboardHost::Impl
   static void manager_entry(void *parameter)
   {
     Impl *self = static_cast<Impl *>(parameter);
-    if (self->initialize() && self->accepting && !self->connected)
-      self->scan_and_connect();
+    if (self->initialize() && self->accepting)
+    {
+      do
+      {
+        const bool pairing = self->pairing_requested;
+        self->pairing_requested = false;
+        if (pairing || !self->connected)
+          self->scan_and_connect(pairing);
+      } while (self->accepting && self->pairing_requested);
+    }
     self->manager_task = nullptr;
     vTaskDelete(nullptr);
   }
@@ -506,6 +546,15 @@ void BluetoothKeyboardHost::start()
   else
     impl->set_status("Keyboard: starting...");
   if (!impl->connected && !impl->manager_task)
+    xTaskCreate(Impl::manager_entry, "bt_keyboard", 8192, impl, 2, &impl->manager_task);
+}
+
+void BluetoothKeyboardHost::start_pairing()
+{
+  impl->accepting = true;
+  impl->pairing_requested = true;
+  impl->set_status("Keyboard: pairing...");
+  if (!impl->manager_task)
     xTaskCreate(Impl::manager_entry, "bt_keyboard", 8192, impl, 2, &impl->manager_task);
 }
 

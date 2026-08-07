@@ -337,3 +337,11 @@ bool HedgeyNotepad::handle_touch(Renderer *renderer, int x, int y)
   }
   return false;
 }
+
+bool HedgeyNotepad::keyboard_status_touched(Renderer *renderer, int x, int y) const
+{
+  const int page_width = renderer->get_page_width();
+  const int page_height = renderer->get_page_height();
+  return x >= 0 && x < page_width &&
+         y >= page_height - renderer->get_line_height() - 6 && y < page_height;
+}

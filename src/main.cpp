@@ -609,6 +609,15 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
   {
     if (content_x >= 0 && content_x < page_width &&
         content_y >= 0 && content_y < page_height &&
+        notepad && notepad->keyboard_status_touched(renderer, content_x, content_y))
+    {
+      ESP_LOGI("TOUCH", "Keyboard status tap -> pairing mode");
+      if (keyboard_host)
+        keyboard_host->start_pairing();
+      return;
+    }
+    if (content_x >= 0 && content_x < page_width &&
+        content_y >= 0 && content_y < page_height &&
         notepad && notepad->handle_touch(renderer, content_x, content_y))
     {
       handleNotepad(renderer);

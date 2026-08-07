@@ -13,7 +13,7 @@ This build targets the **first-generation M5Paper**. EPUB files remain on the SD
 
 ## Bluetooth keyboards
 
-Opening Write makes one quiet, five-second search for a BLE HID keyboard. A tiny line below the soft keyboard shows the result; the on-screen keyboard remains available whether or not a hardware keyboard is found. HedgeyOS Mini does not retry in the background. Close Write and open it again to make another attempt.
+Opening Write makes one quiet, five-second reconnect attempt for saved BLE HID keyboards. A tiny line below the soft keyboard shows the result; the on-screen keyboard remains available whether or not a hardware keyboard is found. HedgeyOS Mini does not retry in the background. Put a new keyboard in its pairing mode, then tap the status line to pair and connect. Tapping the line also retries a saved keyboard that was switched on after Write opened.
 
 The first successful pairing may display a six-digit code to type on the keyboard followed by Enter. Bonding data and an ordered list of up to five keyboards are retained in internal NVS, so subsequent sessions reconnect without repeating the code. When several saved keyboards are nearby, the earliest saved reachable keyboard is selected.
 

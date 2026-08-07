@@ -11,6 +11,7 @@ public:
 
   explicit BluetoothKeyboardHost(NotifyCallback notify);
   void start();
+  void start_pairing();
   void set_accepting_input(bool accepting);
   bool drain_text(std::string &text);
   std::string status() const;

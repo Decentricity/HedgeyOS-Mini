@@ -10,6 +10,7 @@ public:
   HedgeyNotepad();
   void render(Renderer *renderer);
   bool handle_touch(Renderer *renderer, int x, int y);
+  bool keyboard_status_touched(Renderer *renderer, int x, int y) const;
   bool insert_text(const std::string &input);
   void set_keyboard_status(const std::string &status);
   bool save();
