@@ -3,6 +3,7 @@
 #include <freertos/queue.h>
 #include <esp_sleep.h>
 #include "config.h"
+#include "BluetoothKeyboardHost.h"
 #include "HedgeyNotepad.h"
 #include "EpubList/Epub.h"
 #include "EpubList/EpubCache.h"
@@ -28,7 +29,7 @@ extern "C"
   void app_main();
 }
 
-const char *TAG = "main";
+static const char *TAG = "main";
 
 typedef enum
 {
@@ -57,6 +58,7 @@ static EpubReader *reader = nullptr;
 static EpubToc *contents = nullptr;
 static EpubCache *epub_cache = nullptr;
 static HedgeyNotepad *notepad = nullptr;
+static BluetoothKeyboardHost *keyboard_host = nullptr;
 
 void save_reading_progress()
 {
@@ -297,6 +299,10 @@ void handleNotepad(Renderer *renderer)
   {
     notepad = new HedgeyNotepad();
   }
+  if (keyboard_host)
+  {
+    notepad->set_keyboard_status(keyboard_host->status());
+  }
   notepad->render(renderer);
   draw_top_bar_controls(renderer);
 }
@@ -498,6 +504,8 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
     if (ui_state == NOTEPAD_SCREEN)
     {
       ESP_LOGI("TOUCH", "Notepad close tap -> home");
+      if (keyboard_host)
+        keyboard_host->set_accepting_input(false);
       notepad->save();
       renderer->show_busy();
       ui_state = HOME_SCREEN;
@@ -589,6 +597,8 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
         ESP_LOGI("TOUCH", "Write tile tap -> notepad");
         renderer->show_busy();
         ui_state = NOTEPAD_SCREEN;
+        if (keyboard_host)
+          keyboard_host->start();
         handleNotepad(renderer);
       }
     }
@@ -628,6 +638,24 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
 
 void handleUserInteraction(Renderer *renderer, const UIEvent &ui_event, bool needs_redraw)
 {
+  if (ui_event.action == KEYBOARD_INPUT)
+  {
+    if (ui_state == NOTEPAD_SCREEN && keyboard_host && notepad)
+    {
+      std::string input;
+      if (keyboard_host->drain_text(input) && notepad->insert_text(input))
+        handleNotepad(renderer);
+    }
+    return;
+  }
+
+  if (ui_event.action == KEYBOARD_STATUS)
+  {
+    if (ui_state == NOTEPAD_SCREEN)
+      handleNotepad(renderer);
+    return;
+  }
+
   if (ui_event.action == TOUCH_TAP)
   {
     handleTouchInteraction(renderer, ui_event);
@@ -725,7 +753,13 @@ void main_task(void *param)
   renderer->set_margin_right(10);
 
   // create a message queue for UI events
-  xQueueHandle ui_queue = xQueueCreate(10, sizeof(UIEvent));
+  xQueueHandle ui_queue = xQueueCreate(20, sizeof(UIEvent));
+  keyboard_host = new BluetoothKeyboardHost(
+      [ui_queue](bool has_input)
+      {
+        const UIEvent event = {has_input ? KEYBOARD_INPUT : KEYBOARD_STATUS, 0, 0};
+        xQueueSend(ui_queue, &event, 0);
+      });
 
   // set the controls up
   ESP_LOGI("main", "Setting up controls");
@@ -769,7 +803,8 @@ void main_task(void *param)
       if (ui_event.action != NONE)
       {
         // something happened!
-        last_user_interaction = esp_timer_get_time();
+        if (ui_event.action != KEYBOARD_STATUS)
+          last_user_interaction = esp_timer_get_time();
         // show feedback on the touch controls
         touch_controls->renderPressedState(renderer, ui_event.action);
         handleUserInteraction(renderer, ui_event, false);
@@ -793,6 +828,10 @@ void main_task(void *param)
   if (notepad)
   {
     notepad->save();
+  }
+  if (keyboard_host)
+  {
+    keyboard_host->set_accepting_input(false);
   }
   // save the state of the renderer
   renderer->dehydrate();

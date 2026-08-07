@@ -108,6 +108,34 @@ bool HedgeyNotepad::save()
   return true;
 }
 
+bool HedgeyNotepad::insert_text(const std::string &input)
+{
+  bool changed = false;
+  for (std::string::const_iterator it = input.begin(); it != input.end(); ++it)
+  {
+    if (*it == '\b')
+    {
+      if (!text.empty())
+      {
+        text.erase(text.size() - 1);
+        changed = true;
+      }
+    }
+    else if (text.size() < MAX_NOTE_LENGTH)
+    {
+      text.push_back(*it);
+      changed = true;
+    }
+  }
+  is_dirty = is_dirty || changed;
+  return changed;
+}
+
+void HedgeyNotepad::set_keyboard_status(const std::string &status)
+{
+  keyboard_status = status;
+}
+
 char HedgeyNotepad::key_character(int index) const
 {
   switch (layout)
@@ -213,11 +241,20 @@ void HedgeyNotepad::render(Renderer *renderer)
 {
   renderer->clear_screen();
   renderer->use_selector_font(true);
+  const int page_width = renderer->get_page_width();
   const int page_height = renderer->get_page_height();
   const int keyboard_y = page_height / 2 + 4;
   const int row_step = (page_height - keyboard_y - 26) / 4;
   draw_note(renderer, keyboard_y);
   draw_keyboard(renderer, keyboard_y, row_step);
+  renderer->use_selector_font(false);
+  if (!keyboard_status.empty())
+  {
+    std::string visible = keyboard_status;
+    while (!visible.empty() && renderer->get_text_width(visible.c_str()) > page_width - 16)
+      visible.erase(visible.size() - 1);
+    renderer->draw_text(8, page_height - renderer->get_line_height() - 2, visible.c_str());
+  }
 }
 
 bool HedgeyNotepad::handle_touch(Renderer *renderer, int x, int y)

@@ -12,4 +12,6 @@ python3 "${esptool}" --chip esp32 merge_bin \
   0x8000 .pio/build/m5_paper/partitions.bin \
   0x10000 .pio/build/m5_paper/firmware.bin
 
-sha256sum dist/HedgeyOS-Mini-M5Paper.bin
+cp .pio/build/m5_paper/firmware.bin dist/HedgeyOS-Mini-M5Paper-app.bin
+
+sha256sum dist/HedgeyOS-Mini-M5Paper.bin dist/HedgeyOS-Mini-M5Paper-app.bin

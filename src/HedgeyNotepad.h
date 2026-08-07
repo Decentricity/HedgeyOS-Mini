@@ -10,6 +10,8 @@ public:
   HedgeyNotepad();
   void render(Renderer *renderer);
   bool handle_touch(Renderer *renderer, int x, int y);
+  bool insert_text(const std::string &input);
+  void set_keyboard_status(const std::string &status);
   bool save();
 
 private:
@@ -22,6 +24,7 @@ private:
   };
 
   std::string text;
+  std::string keyboard_status;
   KeyboardLayout layout = LOWER_ALPHA;
   bool is_dirty = false;
 
