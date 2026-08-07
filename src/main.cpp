@@ -4,6 +4,7 @@
 #include <esp_sleep.h>
 #include "config.h"
 #include "BluetoothKeyboardHost.h"
+#include "BluetoothDeviceOverlay.h"
 #include "HedgeyNotepad.h"
 #include "EpubList/Epub.h"
 #include "EpubList/EpubCache.h"
@@ -59,6 +60,7 @@ static EpubToc *contents = nullptr;
 static EpubCache *epub_cache = nullptr;
 static HedgeyNotepad *notepad = nullptr;
 static BluetoothKeyboardHost *keyboard_host = nullptr;
+static BluetoothDeviceOverlay keyboard_overlay;
 
 void save_reading_progress()
 {
@@ -299,6 +301,12 @@ void handleNotepad(Renderer *renderer)
   {
     notepad = new HedgeyNotepad();
   }
+  if (keyboard_overlay.visible())
+  {
+    keyboard_overlay.render(renderer);
+    draw_top_bar_controls(renderer);
+    return;
+  }
   if (keyboard_host)
   {
     notepad->set_keyboard_status(keyboard_host->status());
@@ -501,6 +509,12 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
 
   if (top_bar_control == TOP_BAR_CLOSE)
   {
+    if (ui_state == NOTEPAD_SCREEN && keyboard_overlay.visible())
+    {
+      keyboard_overlay.hide();
+      handleNotepad(renderer);
+      return;
+    }
     if (ui_state == NOTEPAD_SCREEN)
     {
       ESP_LOGI("TOUCH", "Notepad close tap -> home");
@@ -533,6 +547,15 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
       top_bar_control == TOP_BAR_NEXT)
   {
     const bool previous = top_bar_control == TOP_BAR_PREVIOUS;
+    if (ui_state == NOTEPAD_SCREEN && keyboard_overlay.visible())
+    {
+      if (previous)
+        keyboard_overlay.previous_page();
+      else
+        keyboard_overlay.next_page();
+      handleNotepad(renderer);
+      return;
+    }
     ESP_LOGI("TOUCH", "Top bar arrow -> %s", previous ? "previous" : "next");
     if (ui_state == READING_EPUB)
     {
@@ -607,13 +630,29 @@ void handleTouchInteraction(Renderer *renderer, const UIEvent &event)
 
   if (ui_state == NOTEPAD_SCREEN)
   {
+    if (keyboard_overlay.visible())
+    {
+      const int device_id = keyboard_overlay.device_at(content_x, content_y,
+                                                        page_width, page_height);
+      if (device_id >= 0 && keyboard_host && keyboard_host->connect_device(device_id))
+      {
+        renderer->show_busy();
+        keyboard_overlay.hide();
+        handleNotepad(renderer);
+      }
+      return;
+    }
     if (content_x >= 0 && content_x < page_width &&
         content_y >= 0 && content_y < page_height &&
         notepad && notepad->keyboard_status_touched(renderer, content_x, content_y))
     {
       ESP_LOGI("TOUCH", "Keyboard status tap -> pairing mode");
       if (keyboard_host)
+      {
+        keyboard_overlay.show_scanning();
         keyboard_host->start_pairing();
+        handleNotepad(renderer);
+      }
       return;
     }
     if (content_x >= 0 && content_x < page_width &&
@@ -662,6 +701,33 @@ void handleUserInteraction(Renderer *renderer, const UIEvent &ui_event, bool nee
   {
     if (ui_state == NOTEPAD_SCREEN)
       handleNotepad(renderer);
+    return;
+  }
+
+  if (ui_event.action == KEYBOARD_DEVICES)
+  {
+    if (ui_state == NOTEPAD_SCREEN && keyboard_host && keyboard_overlay.visible())
+    {
+      const std::vector<BluetoothKeyboardHost::DeviceInfo> discovered =
+          keyboard_host->devices();
+      std::vector<BluetoothDeviceOverlay::Device> overlay_devices;
+      overlay_devices.reserve(discovered.size());
+      for (std::vector<BluetoothKeyboardHost::DeviceInfo>::const_iterator it = discovered.begin();
+           it != discovered.end(); ++it)
+      {
+        BluetoothDeviceOverlay::Device item;
+        item.id = it->id;
+        item.name = it->name;
+        char detail[56];
+        snprintf(detail, sizeof(detail), "%s%s%d dBm",
+                 it->likely_keyboard ? "Keyboard  " : "BLE device  ",
+                 it->paired ? "Paired  " : "", it->rssi);
+        item.detail = detail;
+        overlay_devices.push_back(item);
+      }
+      keyboard_overlay.set_devices(overlay_devices);
+      handleNotepad(renderer);
+    }
     return;
   }
 
@@ -764,9 +830,14 @@ void main_task(void *param)
   // create a message queue for UI events
   xQueueHandle ui_queue = xQueueCreate(20, sizeof(UIEvent));
   keyboard_host = new BluetoothKeyboardHost(
-      [ui_queue](bool has_input)
+      [ui_queue](BluetoothKeyboardHost::Event keyboard_event)
       {
-        const UIEvent event = {has_input ? KEYBOARD_INPUT : KEYBOARD_STATUS, 0, 0};
+        UIAction action = KEYBOARD_STATUS;
+        if (keyboard_event == BluetoothKeyboardHost::INPUT_READY)
+          action = KEYBOARD_INPUT;
+        else if (keyboard_event == BluetoothKeyboardHost::DEVICES_READY)
+          action = KEYBOARD_DEVICES;
+        const UIEvent event = {action, 0, 0};
         xQueueSend(ui_queue, &event, 0);
       });
 
