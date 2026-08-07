@@ -17,7 +17,7 @@ The M5Paper advertises itself as **HedgeyOS Mini**. Opening Write makes one quie
 
 The first successful pairing may display a six-digit code to type on the keyboard followed by Enter. Bonding data and an ordered list of up to five keyboards are retained in internal NVS, so subsequent sessions reconnect without repeating the code. When several saved keyboards are nearby, the earliest saved reachable keyboard is selected.
 
-Custom Classic HID boards such as Cyberdeck2024 are supported; BLE-only scanners cannot see them.
+Custom Classic HID boards such as Cyberdeck2024 are supported; BLE-only scanners cannot see them. Classic keyboards can usually only talk to one host at a time — if Cyberdeck is still connected/paired to your PC, disconnect it from the PC before pairing with HedgeyOS Mini. A timed-out Classic connect now surfaces an explicit failure instead of wedging Write.
 
 ## Build
 

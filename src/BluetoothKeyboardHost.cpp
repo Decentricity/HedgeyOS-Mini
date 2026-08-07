@@ -36,6 +36,8 @@ const EventBits_t BLE_SCAN_DONE = 1 << 1;
 const EventBits_t OPEN_OK = 1 << 2;
 const EventBits_t OPEN_FAILED = 1 << 3;
 const EventBits_t BT_SCAN_DONE = 1 << 4;
+const EventBits_t WORK_AVAILABLE = 1 << 5;
+const EventBits_t OPEN_WORKER_DONE = 1 << 6;
 
 struct StoredDevice
 {
@@ -63,6 +65,15 @@ struct ScanResult
   char name[40];
 };
 
+struct PendingConnect
+{
+  uint8_t address[6];
+  esp_hid_transport_t transport;
+  uint8_t address_type;
+  char name[40];
+  bool valid;
+};
+
 bool same_address(const uint8_t *left, const uint8_t *right)
 {
   return memcmp(left, right, 6) == 0;
@@ -82,6 +93,7 @@ struct BluetoothKeyboardHost::Impl
     stored.count = 0;
     memset(stored.reserved, 0, sizeof(stored.reserved));
     memset(stored.devices, 0, sizeof(stored.devices));
+    memset(&pending, 0, sizeof(pending));
     strcpy(status_text, "Keyboard: off");
   }
 
@@ -91,20 +103,23 @@ struct BluetoothKeyboardHost::Impl
   SemaphoreHandle_t status_mutex = nullptr;
   TimerHandle_t input_timer = nullptr;
   TaskHandle_t manager_task = nullptr;
+  TaskHandle_t open_task = nullptr;
   bool initialized = false;
   bool accepting = false;
   bool connected = false;
-  bool scanning = false;
   bool caps_lock = false;
+  bool classic_open_hung = false;
+  bool reconnect_on_start = false;
   volatile bool pairing_requested = false;
   volatile bool connection_requested = false;
-  volatile int selected_device = -1;
   esp_hidh_dev_t *device = nullptr;
+  esp_hidh_dev_t *open_result = nullptr;
   uint8_t previous_keys[6] = {};
   char status_text[72] = {};
   StoredDevices stored = {};
   ScanResult scan_results[MAX_SCAN_RESULTS] = {};
   int scan_count = 0;
+  PendingConnect pending = {};
   portMUX_TYPE scan_lock = portMUX_INITIALIZER_UNLOCKED;
 
   static Impl *instance;
@@ -115,7 +130,7 @@ struct BluetoothKeyboardHost::Impl
     strncpy(status_text, value, sizeof(status_text) - 1);
     status_text[sizeof(status_text) - 1] = 0;
     xSemaphoreGive(status_mutex);
-    if (accepting && refresh)
+    if (refresh)
       notify(STATUS_CHANGED);
   }
 
@@ -133,6 +148,13 @@ struct BluetoothKeyboardHost::Impl
     std::string result(self->status_text);
     xSemaphoreGive(self->status_mutex);
     return result;
+  }
+
+  void wake_manager()
+  {
+    xEventGroupSetBits(events, WORK_AVAILABLE);
+    if (!manager_task)
+      xTaskCreate(manager_entry, "bt_keyboard", 10240, this, 2, &manager_task);
   }
 
   void load_stored()
@@ -250,9 +272,9 @@ struct BluetoothKeyboardHost::Impl
     for (int stored_position = 0; stored_position < stored.count; ++stored_position)
       for (int result_position = 0; result_position < scan_count; ++result_position)
         if (stored.devices[stored_position].transport == scan_results[result_position].transport &&
-            same_address(stored.devices[stored_position].address, scan_results[result_position].address))
+            same_address(stored.devices[stored_position].address,
+                         scan_results[result_position].address))
           return result_position;
-
     return -1;
   }
 
@@ -335,6 +357,13 @@ struct BluetoothKeyboardHost::Impl
     memcpy(previous_keys, keys, 6);
   }
 
+  void stop_radio()
+  {
+    esp_ble_gap_stop_scanning();
+    esp_bt_gap_cancel_discovery();
+    vTaskDelay(pdMS_TO_TICKS(50));
+  }
+
   static void hidh_callback(void *, esp_event_base_t, int32_t id, void *event_data)
   {
     Impl *self = instance;
@@ -345,16 +374,17 @@ struct BluetoothKeyboardHost::Impl
     {
       self->device = event->open.dev;
       self->connected = true;
+      self->classic_open_hung = false;
       const uint8_t *address = esp_hidh_dev_bda_get(self->device);
       const esp_hid_transport_t transport = esp_hidh_dev_transport_get(self->device);
-      uint8_t address_type = 0;
-      for (int i = 0; i < self->scan_count; ++i)
-        if (self->scan_results[i].transport == transport && same_address(address, self->scan_results[i].address))
-          address_type = self->scan_results[i].address_type;
-      self->remember(address, transport, address_type);
+      uint8_t address_type = self->pending.valid ? self->pending.address_type : 0;
+      if (address)
+        self->remember(address, transport, address_type);
       char message[72];
-      snprintf(message, sizeof(message), "Keyboard: %.54s",
-               esp_hidh_dev_name_get(self->device) ? esp_hidh_dev_name_get(self->device) : "connected");
+      const char *name = esp_hidh_dev_name_get(self->device);
+      if (!name && self->pending.valid)
+        name = self->pending.name;
+      snprintf(message, sizeof(message), "Keyboard: %.54s", name ? name : "connected");
       self->set_status(message);
       xEventGroupSetBits(self->events, OPEN_OK);
     }
@@ -369,8 +399,8 @@ struct BluetoothKeyboardHost::Impl
         self->device = nullptr;
         self->connected = false;
         memset(self->previous_keys, 0, sizeof(self->previous_keys));
-        self->set_status(self->pairing_requested ? "Keyboard: pairing..." :
-                                                   "Keyboard: disconnected");
+        if (self->accepting)
+          self->set_status("Keyboard: disconnected");
       }
       xEventGroupSetBits(self->events, OPEN_FAILED);
     }
@@ -426,9 +456,8 @@ struct BluetoothKeyboardHost::Impl
           memcpy(name_text, name, copy_length);
           name_text[copy_length] = 0;
         }
-        // Keep non-HID BLE devices out of the chooser so Classic HID keyboards
-        // are not drowned by phones/headsets advertising only GAP/GATT.
-        if (likely_keyboard)
+        // Restore named BLE devices (Quest, etc.) while still ranking HID first.
+        if (likely_keyboard || has_name)
           self->add_scan_result(param->scan_rst.bda, ESP_HID_TRANSPORT_BLE,
                                 param->scan_rst.ble_addr_type, param->scan_rst.rssi,
                                 name_text, likely_keyboard, has_name);
@@ -444,7 +473,7 @@ struct BluetoothKeyboardHost::Impl
     else if (event == ESP_GAP_BLE_SEC_REQ_EVT)
       esp_ble_gap_security_rsp(param->ble_security.ble_req.bd_addr, true);
     else if (event == ESP_GAP_BLE_AUTH_CMPL_EVT && param->ble_security.auth_cmpl.success)
-      self->set_status("Keyboard: paired", false);
+      self->set_status("Keyboard: paired");
   }
 
   static bool eir_has_hid_uuid(const uint8_t *eir)
@@ -480,7 +509,6 @@ struct BluetoothKeyboardHost::Impl
       const uint8_t *name = nullptr;
       uint8_t name_length = 0;
       bool has_hid_uuid = false;
-      const uint8_t *eir = nullptr;
       for (int i = 0; i < param->disc_res.num_prop; ++i)
       {
         esp_bt_gap_dev_prop_t *prop = &param->disc_res.prop[i];
@@ -495,7 +523,7 @@ struct BluetoothKeyboardHost::Impl
           memcpy(&cod_value, prop->val, sizeof(uint32_t));
         else if (prop->type == ESP_BT_GAP_DEV_PROP_EIR)
         {
-          eir = static_cast<const uint8_t *>(prop->val);
+          const uint8_t *eir = static_cast<const uint8_t *>(prop->val);
           has_hid_uuid = eir_has_hid_uuid(eir);
           if (!name)
           {
@@ -511,21 +539,15 @@ struct BluetoothKeyboardHost::Impl
               name_length = length;
             }
           }
-          if (!has_hid_uuid)
-            has_hid_uuid = eir_has_hid_uuid(eir);
         }
       }
       const uint8_t major = (cod_value & ESP_BT_COD_MAJOR_DEV_BIT_MASK) >>
                             ESP_BT_COD_MAJOR_DEV_BIT_OFFSET;
       const bool peripheral = major == ESP_BT_COD_MAJOR_DEV_PERIPHERAL;
-      // Cyberdeck2024 advertises as a phone with Classic HID 0x1124. Inquiry
-      // often lacks the UUID in EIR, so include phone/computer majors too.
       const bool host_like = major == ESP_BT_COD_MAJOR_DEV_PHONE ||
                              major == ESP_BT_COD_MAJOR_DEV_COMPUTER;
-      const bool likely_keyboard = peripheral || has_hid_uuid;
-      if (!(likely_keyboard || host_like || has_hid_uuid))
-        return;
-      if (!(name && name_length) && !likely_keyboard && !has_hid_uuid)
+      const bool likely_keyboard = peripheral || has_hid_uuid || host_like;
+      if (!likely_keyboard && !(name && name_length))
         return;
 
       char name_text[40];
@@ -541,8 +563,7 @@ struct BluetoothKeyboardHost::Impl
         has_name = true;
       }
       self->add_scan_result(param->disc_res.bda, ESP_HID_TRANSPORT_BT, 0, rssi,
-                            name_text, likely_keyboard || has_hid_uuid || host_like,
-                            has_name);
+                            name_text, likely_keyboard, has_name);
     }
     else if (event == ESP_BT_GAP_KEY_NOTIF_EVT)
       self->set_pairing_code(param->key_notif.passkey);
@@ -557,7 +578,7 @@ struct BluetoothKeyboardHost::Impl
       esp_bt_gap_pin_reply(param->pin_req.bda, true, 4, pin_code);
     }
     else if (event == ESP_BT_GAP_AUTH_CMPL_EVT && param->auth_cmpl.stat == ESP_BT_STATUS_SUCCESS)
-      self->set_status("Keyboard: paired", false);
+      self->set_status("Keyboard: paired");
   }
 
   bool initialize()
@@ -565,6 +586,11 @@ struct BluetoothKeyboardHost::Impl
     if (initialized)
       return true;
     esp_err_t result = nvs_flash_init();
+    if (result == ESP_ERR_NVS_NO_FREE_PAGES || result == ESP_ERR_NVS_NEW_VERSION_FOUND)
+    {
+      nvs_flash_erase();
+      result = nvs_flash_init();
+    }
     if (result != ESP_OK)
     {
       set_status("Keyboard: NVS error");
@@ -572,12 +598,39 @@ struct BluetoothKeyboardHost::Impl
     }
     load_stored();
     esp_bt_controller_config_t controller_config = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
-    if (esp_bt_controller_init(&controller_config) != ESP_OK ||
-        esp_bt_controller_enable(ESP_BT_MODE_BTDM) != ESP_OK ||
-        esp_bluedroid_init() != ESP_OK || esp_bluedroid_enable() != ESP_OK)
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE)
     {
-      set_status("Keyboard: Bluetooth error");
-      return false;
+      if (esp_bt_controller_init(&controller_config) != ESP_OK ||
+          esp_bt_controller_enable(ESP_BT_MODE_BTDM) != ESP_OK)
+      {
+        set_status("Keyboard: controller error");
+        return false;
+      }
+    }
+    else if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_INITED)
+    {
+      if (esp_bt_controller_enable(ESP_BT_MODE_BTDM) != ESP_OK)
+      {
+        set_status("Keyboard: controller error");
+        return false;
+      }
+    }
+
+    if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_UNINITIALIZED)
+    {
+      if (esp_bluedroid_init() != ESP_OK || esp_bluedroid_enable() != ESP_OK)
+      {
+        set_status("Keyboard: Bluedroid error");
+        return false;
+      }
+    }
+    else if (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_INITIALIZED)
+    {
+      if (esp_bluedroid_enable() != ESP_OK)
+      {
+        set_status("Keyboard: Bluedroid error");
+        return false;
+      }
     }
 
     esp_bt_dev_set_device_name(DEVICE_NAME);
@@ -616,17 +669,55 @@ struct BluetoothKeyboardHost::Impl
     return true;
   }
 
-  void connect_result(int selected)
+  static void open_worker(void *parameter)
   {
-    if (selected < 0 || selected >= scan_count)
+    Impl *self = static_cast<Impl *>(parameter);
+    PendingConnect local = self->pending;
+    self->open_result = nullptr;
+    if (!local.valid)
+    {
+      xEventGroupSetBits(self->events, OPEN_FAILED | OPEN_WORKER_DONE);
+      self->open_task = nullptr;
+      vTaskDelete(nullptr);
+      return;
+    }
+
+    // Classic esp_hidh_dev_open() blocks forever inside WAIT_DEV when the
+    // peer is bonded to another host or never completes SDP. Run it here so
+    // the manager can time out and keep serving pair/scan requests.
+    esp_hidh_dev_t *opened = esp_hidh_dev_open(local.address, local.transport,
+                                               local.address_type);
+    self->open_result = opened;
+    if (!opened)
+      xEventGroupSetBits(self->events, OPEN_FAILED);
+    // Success path also fires ESP_HIDH_OPEN_EVENT -> OPEN_OK.
+    xEventGroupSetBits(self->events, OPEN_WORKER_DONE);
+    self->open_task = nullptr;
+    vTaskDelete(nullptr);
+  }
+
+  void connect_pending()
+  {
+    if (!pending.valid)
     {
       set_status("Keyboard: device no longer available");
       return;
     }
-    if (stored_index(scan_results[selected].address, scan_results[selected].transport) < 0 &&
-        stored.count >= MAX_STORED)
+    if (stored_index(pending.address, pending.transport) < 0 && stored.count >= MAX_STORED)
     {
       set_status("Keyboard: 5 paired (limit)");
+      return;
+    }
+    if (classic_open_hung)
+    {
+      set_status(pending.transport == ESP_HID_TRANSPORT_BT
+                     ? "Keyboard: Classic busy - unpair from PC"
+                     : "Keyboard: Bluetooth busy; reboot device");
+      return;
+    }
+    if (open_task)
+    {
+      set_status("Keyboard: still connecting...");
       return;
     }
     if (connected && device)
@@ -635,25 +726,86 @@ struct BluetoothKeyboardHost::Impl
       esp_hidh_dev_close(device);
       xEventGroupWaitBits(events, OPEN_FAILED, pdTRUE, pdTRUE, pdMS_TO_TICKS(2000));
     }
+
+    stop_radio();
     char message[72];
-    snprintf(message, sizeof(message), "Connecting: %.57s", scan_results[selected].name);
+    snprintf(message, sizeof(message), "Connecting: %.57s", pending.name);
     set_status(message);
-    xEventGroupClearBits(events, OPEN_OK | OPEN_FAILED);
-    esp_hidh_dev_t *opening = esp_hidh_dev_open(scan_results[selected].address,
-                                                scan_results[selected].transport,
-                                                scan_results[selected].address_type);
-    if (!opening)
+    xEventGroupClearBits(events, OPEN_OK | OPEN_FAILED | OPEN_WORKER_DONE);
+    open_result = nullptr;
+    if (xTaskCreate(open_worker, "bt_open", 8192, this, 3, &open_task) != pdPASS)
     {
       set_status("Keyboard: connection failed");
       return;
     }
-    EventBits_t result = xEventGroupWaitBits(events, OPEN_OK | OPEN_FAILED, pdTRUE,
-                                              pdFALSE, pdMS_TO_TICKS(20000));
-    if (!(result & OPEN_OK))
+
+    EventBits_t result = xEventGroupWaitBits(events, OPEN_OK | OPEN_FAILED | OPEN_WORKER_DONE,
+                                              pdTRUE, pdFALSE, pdMS_TO_TICKS(12000));
+    if (result & OPEN_OK)
     {
-      esp_hidh_dev_close(opening);
-      set_status("Keyboard: connection failed");
+      // Connected; open worker may still be exiting.
+      return;
     }
+    if (result & OPEN_FAILED)
+    {
+      set_status(pending.transport == ESP_HID_TRANSPORT_BT
+                     ? "Keyboard: failed - unpair from PC?"
+                     : "Keyboard: connection failed");
+      return;
+    }
+
+    // Timed out while Classic WAIT_DEV is still blocked in open_worker.
+    classic_open_hung = pending.transport == ESP_HID_TRANSPORT_BT;
+    set_status(classic_open_hung
+                   ? "Keyboard: timeout - unpair Cyberdeck from PC"
+                   : "Keyboard: connection timed out");
+    ESP_LOGW(TAG, "HID open timed out for %s", pending.name);
+  }
+
+  void run_ble_scan(uint32_t seconds)
+  {
+    xEventGroupClearBits(events, BLE_PARAMS_READY | BLE_SCAN_DONE);
+    esp_ble_scan_params_t params = {};
+    params.scan_type = BLE_SCAN_TYPE_ACTIVE;
+    params.own_addr_type = BLE_ADDR_TYPE_PUBLIC;
+    params.scan_filter_policy = BLE_SCAN_FILTER_ALLOW_ALL;
+    params.scan_interval = 0x50;
+    params.scan_window = 0x30;
+    params.scan_duplicate = BLE_SCAN_DUPLICATE_ENABLE;
+    if (esp_ble_gap_set_scan_params(&params) != ESP_OK)
+    {
+      xEventGroupSetBits(events, BLE_SCAN_DONE);
+      return;
+    }
+    xEventGroupWaitBits(events, BLE_PARAMS_READY, pdTRUE, pdTRUE, pdMS_TO_TICKS(1500));
+    if (esp_ble_gap_start_scanning(seconds) != ESP_OK)
+    {
+      xEventGroupSetBits(events, BLE_SCAN_DONE);
+      return;
+    }
+    xEventGroupWaitBits(events, BLE_SCAN_DONE, pdTRUE, pdTRUE,
+                        pdMS_TO_TICKS(seconds * 1000 + 1500));
+    esp_ble_gap_stop_scanning();
+  }
+
+  void run_classic_scan(uint32_t seconds)
+  {
+    if (classic_open_hung)
+    {
+      ESP_LOGW(TAG, "Skipping Classic scan; previous Classic open still hung");
+      return;
+    }
+    xEventGroupClearBits(events, BT_SCAN_DONE);
+    const int duration = std::max(1, static_cast<int>((seconds + 1) / 1.28));
+    if (esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, duration, 0) != ESP_OK)
+    {
+      xEventGroupSetBits(events, BT_SCAN_DONE);
+      return;
+    }
+    xEventGroupWaitBits(events, BT_SCAN_DONE, pdTRUE, pdTRUE,
+                        pdMS_TO_TICKS(seconds * 1000 + 2000));
+    esp_bt_gap_cancel_discovery();
+    vTaskDelay(pdMS_TO_TICKS(100));
   }
 
   void scan_and_connect(bool pairing)
@@ -664,39 +816,15 @@ struct BluetoothKeyboardHost::Impl
       return;
     }
 
+    stop_radio();
     scan_count = 0;
-    xEventGroupClearBits(events, BLE_PARAMS_READY | BLE_SCAN_DONE | BT_SCAN_DONE |
-                                  OPEN_OK | OPEN_FAILED);
-    set_status(pairing ? "Keyboard: pairing..." : "Keyboard: reconnecting...", false);
+    set_status(pairing ? "Keyboard: scanning..." : "Keyboard: reconnecting...");
 
-    bool ble_started = false;
-    esp_ble_scan_params_t params = {};
-    params.scan_type = BLE_SCAN_TYPE_ACTIVE;
-    params.own_addr_type = BLE_ADDR_TYPE_PUBLIC;
-    params.scan_filter_policy = BLE_SCAN_FILTER_ALLOW_ALL;
-    params.scan_interval = 0x50;
-    params.scan_window = 0x30;
-    params.scan_duplicate = BLE_SCAN_DUPLICATE_ENABLE;
-    if (esp_ble_gap_set_scan_params(&params) == ESP_OK)
-    {
-      xEventGroupWaitBits(events, BLE_PARAMS_READY, pdTRUE, pdTRUE, pdMS_TO_TICKS(1500));
-      if (esp_ble_gap_start_scanning(5) == ESP_OK)
-        ble_started = true;
-    }
-    if (!ble_started)
-      xEventGroupSetBits(events, BLE_SCAN_DONE);
-
-    bool classic_started = false;
-    // ~5 seconds of Classic inquiry (duration unit is 1.28s)
-    if (esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 4, 0) == ESP_OK)
-      classic_started = true;
-    if (!classic_started)
-      xEventGroupSetBits(events, BT_SCAN_DONE);
-
-    xEventGroupWaitBits(events, BLE_SCAN_DONE | BT_SCAN_DONE, pdTRUE, pdTRUE,
-                        pdMS_TO_TICKS(9000));
-    esp_ble_gap_stop_scanning();
-    esp_bt_gap_cancel_discovery();
+    // Sequential scans: Classic first (Cyberdeck), then BLE. Concurrent BTDM
+    // inquiry+BLE scan left the stack half-dead after a failed Classic open.
+    run_classic_scan(5);
+    run_ble_scan(5);
+    stop_radio();
 
     if (pairing)
     {
@@ -709,8 +837,12 @@ struct BluetoothKeyboardHost::Impl
                     return left.transport == ESP_HID_TRANSPORT_BT;
                   return left.rssi > right.rssi;
                 });
-      set_status(scan_count ? "Keyboard: select a device" :
-                              "Keyboard: none found; tap to retry", false);
+      if (scan_count)
+        set_status("Keyboard: select a device");
+      else if (classic_open_hung)
+        set_status("Keyboard: none found (Classic hung)");
+      else
+        set_status("Keyboard: none found; tap to retry");
       notify(DEVICES_READY);
       return;
     }
@@ -721,31 +853,61 @@ struct BluetoothKeyboardHost::Impl
       set_status("Keyboard: saved device not found");
       return;
     }
-    connect_result(selected);
+    memcpy(pending.address, scan_results[selected].address, 6);
+    pending.transport = scan_results[selected].transport;
+    pending.address_type = scan_results[selected].address_type;
+    strncpy(pending.name, scan_results[selected].name, sizeof(pending.name) - 1);
+    pending.name[sizeof(pending.name) - 1] = 0;
+    pending.valid = true;
+    connect_pending();
   }
 
   static void manager_entry(void *parameter)
   {
     Impl *self = static_cast<Impl *>(parameter);
-    if (self->initialize() && self->accepting)
+    if (!self->initialize())
     {
-      do
-      {
-        if (self->pairing_requested)
-        {
-          self->pairing_requested = false;
-          self->scan_and_connect(true);
-        }
-        else if (self->connection_requested)
-        {
-          self->connection_requested = false;
-          self->connect_result(self->selected_device);
-        }
-        else if (!self->connected)
-          self->scan_and_connect(false);
-      } while (self->accepting &&
-               (self->pairing_requested || self->connection_requested));
+      self->manager_task = nullptr;
+      vTaskDelete(nullptr);
+      return;
     }
+
+    while (true)
+    {
+      const bool has_work = self->pairing_requested || self->connection_requested ||
+                            self->reconnect_on_start;
+      if (!has_work)
+      {
+        if (!self->accepting)
+          break;
+        xEventGroupWaitBits(self->events, WORK_AVAILABLE, pdTRUE, pdFALSE,
+                            pdMS_TO_TICKS(2000));
+        if (!self->accepting && !self->pairing_requested && !self->connection_requested &&
+            !self->reconnect_on_start)
+          break;
+        continue;
+      }
+
+      if (self->pairing_requested)
+      {
+        self->pairing_requested = false;
+        self->reconnect_on_start = false;
+        self->scan_and_connect(true);
+      }
+      else if (self->connection_requested)
+      {
+        self->connection_requested = false;
+        self->reconnect_on_start = false;
+        self->connect_pending();
+      }
+      else if (self->reconnect_on_start)
+      {
+        self->reconnect_on_start = false;
+        if (self->accepting && !self->connected)
+          self->scan_and_connect(false);
+      }
+    }
+
     self->manager_task = nullptr;
     vTaskDelete(nullptr);
   }
@@ -763,20 +925,21 @@ void BluetoothKeyboardHost::start()
 {
   impl->accepting = true;
   if (impl->connected)
+  {
     impl->notify(STATUS_CHANGED);
-  else
-    impl->set_status("Keyboard: starting...");
-  if (!impl->connected && !impl->manager_task)
-    xTaskCreate(Impl::manager_entry, "bt_keyboard", 8192, impl, 2, &impl->manager_task);
+    return;
+  }
+  impl->reconnect_on_start = true;
+  impl->set_status("Keyboard: starting...");
+  impl->wake_manager();
 }
 
 void BluetoothKeyboardHost::start_pairing()
 {
   impl->accepting = true;
   impl->pairing_requested = true;
-  impl->set_status("Keyboard: scanning...", false);
-  if (!impl->manager_task)
-    xTaskCreate(Impl::manager_entry, "bt_keyboard", 8192, impl, 2, &impl->manager_task);
+  impl->set_status("Keyboard: scanning...");
+  impl->wake_manager();
 }
 
 std::vector<BluetoothKeyboardHost::DeviceInfo> BluetoothKeyboardHost::devices() const
@@ -812,17 +975,29 @@ bool BluetoothKeyboardHost::connect_device(int id)
 {
   if (id < 0 || id >= impl->scan_count)
     return false;
-  impl->selected_device = id;
+  const ScanResult &selected = impl->scan_results[id];
+  memcpy(impl->pending.address, selected.address, 6);
+  impl->pending.transport = selected.transport;
+  impl->pending.address_type = selected.address_type;
+  strncpy(impl->pending.name, selected.name, sizeof(impl->pending.name) - 1);
+  impl->pending.name[sizeof(impl->pending.name) - 1] = 0;
+  impl->pending.valid = true;
   impl->connection_requested = true;
   impl->set_status("Keyboard: connecting...");
-  if (!impl->manager_task)
-    xTaskCreate(Impl::manager_entry, "bt_keyboard", 8192, impl, 2, &impl->manager_task);
+  impl->wake_manager();
   return true;
 }
 
 void BluetoothKeyboardHost::set_accepting_input(bool accepting)
 {
   impl->accepting = accepting;
+  if (!accepting)
+  {
+    impl->pairing_requested = false;
+    impl->connection_requested = false;
+    impl->reconnect_on_start = false;
+    impl->wake_manager();
+  }
 }
 
 bool BluetoothKeyboardHost::drain_text(std::string &text)
